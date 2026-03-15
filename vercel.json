@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "main.py", "use": "@vercel/python" }
+  ],
+  "routes": [
+    { "src": "/consulta", "dest": "/main.py" },
+    { "src": "/rotas", "dest": "/main.py" },
+    { "src": "/historico", "dest": "/main.py" },
+    { "src": "/cron", "dest": "/main.py" },
+    { "src": "/health", "dest": "/main.py" },
+    { "src": "/(.*)", "dest": "/main.py" }
+  ]
+}
