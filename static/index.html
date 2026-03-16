@@ -82,8 +82,16 @@
             <div class="col-md-3">
               <input id="outbound_date" type="date" class="form-control" value="2026-06-04" />
             </div>
-            <div class="col-md-3">
+            <div class="col-md-2">
               <input id="inbound_date" type="date" class="form-control" value="" />
+            </div>
+            <div class="col-md-2">
+              <select id="fonte" class="form-select">
+                <option value="google" selected>Google Flights</option>
+                <option value="skyscanner">Skyscanner</option>
+                <option value="kayak">Kayak</option>
+                <option value="maxmilhas">MaxMilhas</option>
+              </select>
             </div>
             <div class="col-md-2 d-grid">
               <button id="btn-consultar" class="btn btn-primary" onclick="consultar()">Consultar</button>
@@ -98,12 +106,13 @@
                   <th>Rota</th>
                   <th>Data voo</th>
                   <th>Preço</th>
+                  <th>Fonte</th>
                   <th>Data/Hora</th>
                 </tr>
               </thead>
               <tbody id="consulta-body">
                 <tr>
-                  <td colspan="4" class="text-center text-muted">Faça uma consulta para ver resultados.</td>
+                  <td colspan="5" class="text-center text-muted">Faça uma consulta para ver resultados.</td>
                 </tr>
               </tbody>
             </table>
@@ -125,11 +134,12 @@
                   <th>Rota</th>
                   <th>Data voo</th>
                   <th>Preço</th>
+                  <th>Fonte</th>
                   <th>Data/Hora</th>
                 </tr>
               </thead>
               <tbody id="cron-body">
-                <tr><td colspan="4" class="text-center text-muted">Clique em “Executar busca completa”.</td></tr>
+                <tr><td colspan="5" class="text-center text-muted">Clique em “Executar busca completa”.</td></tr>
               </tbody>
             </table>
           </div>
@@ -154,12 +164,13 @@
                   <th>Rota</th>
                   <th>Data voo</th>
                   <th>Preço</th>
+                  <th>Fonte</th>
                   <th>Data/Hora</th>
                 </tr>
               </thead>
               <tbody id="historico-body">
                 <tr>
-                  <td colspan="4" class="text-center text-muted">Clique em “Atualizar” para carregar.</td>
+                  <td colspan="5" class="text-center text-muted">Clique em “Atualizar” para carregar.</td>
                 </tr>
               </tbody>
             </table>
@@ -370,7 +381,7 @@
         const body = document.getElementById('consulta-body');
 
         btn.disabled = true;
-        body.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Consultando...</td></tr>';
+        body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Consultando...</td></tr>';
 
         try {
           const params = new URLSearchParams({
@@ -378,13 +389,14 @@
             destination: document.getElementById('destination').value,
             outbound_date: document.getElementById('outbound_date').value,
             inbound_date: document.getElementById('inbound_date').value,
+            fonte: document.getElementById('fonte').value,
           });
 
           const res = await fetch(`/consulta?${params.toString()}`);
           const data = await res.json();
 
           if (data.error) {
-            body.innerHTML = `<tr><td colspan="4" class="text-center text-danger">${data.error}</td></tr>`;
+            body.innerHTML = `<tr><td colspan="5" class="text-center text-danger">${data.error}</td></tr>`;
           } else {
             const rota = data.rota || {};
             const r = data.resultado || {};
@@ -396,6 +408,7 @@
                 <td>${safe(rota.origin)} → ${safe(rota.destination)}</td>
                 <td>${dataVoo}</td>
                 <td>${preco}</td>
+                <td>${safe(r.site)}</td>
                 <td>${formatDateTimePtBr(new Date().toISOString())}</td>
               </tr>
             `;
@@ -452,7 +465,7 @@
         btn.disabled = true;
         loading.style.display = 'block';
         loading.textContent = 'Iniciando busca...';
-        body.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Iniciando busca...</td></tr>';
+        body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Iniciando busca...</td></tr>';
 
         let started = false;
         const items = [];
@@ -463,7 +476,7 @@
           const voltas = items.filter((x) => String(x.destination).toUpperCase() === 'PVH').sort(sortByPriceAsc);
 
           const rows = [];
-          if (idas.length) rows.push('<tr class="table-secondary"><td colspan="4"><strong>IDAS</strong> (menor → maior preço)</td></tr>');
+          if (idas.length) rows.push('<tr class="table-secondary"><td colspan="5"><strong>IDAS</strong> (menor → maior preço)</td></tr>');
           for (const item of idas) {
             const tipo = item.trip_type === 'roundtrip' ? 'Ida e volta' : 'Somente ida';
             rows.push(`
@@ -471,11 +484,12 @@
 <td>${safe(item.origin)} → ${safe(item.destination)}</td>
 <td>${safe(item.inbound_date) ? `${safe(item.outbound_date)} / ${safe(item.inbound_date)}` : `${safe(item.outbound_date)}`}</td>
 <td>${safe(item.price_fmt, 'Sem preço')}</td>
+<td>${safe(item.site)}</td>
 <td>${formatDateTimePtBr(new Date().toISOString())}</td>
 </tr>`);
           }
 
-          if (voltas.length) rows.push('<tr class="table-secondary"><td colspan="4"><strong>VOLTAS PARA PVH</strong> (menor → maior preço)</td></tr>');
+          if (voltas.length) rows.push('<tr class="table-secondary"><td colspan="5"><strong>VOLTAS PARA PVH</strong> (menor → maior preço)</td></tr>');
           for (const item of voltas) {
             const tipo = item.trip_type === 'roundtrip' ? 'Ida e volta' : 'Somente ida';
             rows.push(`
@@ -483,11 +497,12 @@
 <td>${safe(item.origin)} → ${safe(item.destination)}</td>
 <td>${safe(item.inbound_date) ? `${safe(item.outbound_date)} / ${safe(item.inbound_date)}` : `${safe(item.outbound_date)}`}</td>
 <td>${safe(item.price_fmt, 'Sem preço')}</td>
+<td>${safe(item.site)}</td>
 <td>${formatDateTimePtBr(new Date().toISOString())}</td>
 </tr>`);
           }
 
-          body.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="text-center text-muted">Sem resultados nesta execução.</td></tr>';
+          body.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="5" class="text-center text-muted">Sem resultados nesta execução.</td></tr>';
           highlightBestRows('cron-body', 2);
           highlightBestReturnToPVHFromRoute('cron-body', 0, 2);
         };
@@ -518,9 +533,19 @@
               loading.style.display = 'none';
               loading.textContent = 'Buscando rotas... isso pode levar alguns minutos.';
               if (!started) {
-                body.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Sem resultados nesta execução.</td></tr>';
+                body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Sem resultados nesta execução.</td></tr>';
               }
               historico();
+              return;
+            }
+
+            if (msg.type === 'error') {
+              es.close();
+              btn.disabled = false;
+              loading.style.display = 'none';
+              loading.textContent = 'Buscando rotas... isso pode levar alguns minutos.';
+              body.innerHTML = `<tr><td colspan="4" class="text-center text-danger">${safe(msg.message, 'Erro ao executar busca completa.')}</td></tr>`;
+              return;
             }
           } catch (_e) {}
         };
@@ -531,7 +556,7 @@
           loading.style.display = 'none';
           loading.textContent = 'Buscando rotas... isso pode levar alguns minutos.';
           if (!started) {
-            body.innerHTML = '<tr><td colspan="4" class="text-center text-danger">Erro ao executar busca completa.</td></tr>';
+            body.innerHTML = '<tr><td colspan="5" class="text-center text-danger">Erro ao executar busca completa.</td></tr>';
           }
         };
       }
@@ -539,7 +564,7 @@
       async function historico() {
         const loading = document.getElementById('historico-loading');
         const body = document.getElementById('historico-body');
-        body.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Carregando histórico...</td></tr>';
+        body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Carregando histórico...</td></tr>';
 
         try {
           const limit = Math.max(1, Math.min(200, Number(document.getElementById('historico-limit').value || 20)));
@@ -547,7 +572,7 @@
           const data = await res.json();
 
           if (!data.items || !data.items.length) {
-            body.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Sem dados no histórico.</td></tr>';
+            body.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Sem dados no histórico.</td></tr>';
             return;
           }
 
@@ -561,7 +586,7 @@
           const voltas = mapped.filter((x) => String(x.destination).toUpperCase() === 'PVH').sort(sortByPriceAsc);
 
           const rows = [];
-          if (idas.length) rows.push('<tr class="table-secondary"><td colspan="4"><strong>IDAS</strong> (menor → maior preço)</td></tr>');
+          if (idas.length) rows.push('<tr class="table-secondary"><td colspan="5"><strong>IDAS</strong> (menor → maior preço)</td></tr>');
           for (const item of idas) {
             const rota = `${safe(item.origin)} → ${safe(item.destination)}`;
             const dataVoo = item.inbound_date ? `${safe(item.outbound_date)} / ${safe(item.inbound_date)}` : safe(item.outbound_date);
@@ -572,11 +597,12 @@
 <td>${rota}</td>
 <td>${dataVoo}</td>
 <td>${preco}</td>
+<td>${safe(item.site)}</td>
 <td>${formatDateTimePtBr(item.created_at)}</td>
 </tr>`);
           }
 
-          if (voltas.length) rows.push('<tr class="table-secondary"><td colspan="4"><strong>VOLTAS PARA PVH</strong> (menor → maior preço)</td></tr>');
+          if (voltas.length) rows.push('<tr class="table-secondary"><td colspan="5"><strong>VOLTAS PARA PVH</strong> (menor → maior preço)</td></tr>');
           for (const item of voltas) {
             const rota = `${safe(item.origin)} → ${safe(item.destination)}`;
             const dataVoo = item.inbound_date ? `${safe(item.outbound_date)} / ${safe(item.inbound_date)}` : safe(item.outbound_date);
@@ -587,6 +613,7 @@
 <td>${rota}</td>
 <td>${dataVoo}</td>
 <td>${preco}</td>
+<td>${safe(item.site)}</td>
 <td>${formatDateTimePtBr(item.created_at)}</td>
 </tr>`);
           }
@@ -595,7 +622,7 @@
           highlightBestRows('historico-body', 2);
           highlightBestReturnToPVHFromRoute('historico-body', 0, 2);
         } catch (e) {
-          body.innerHTML = '<tr><td colspan="4" class="text-center text-danger">Erro ao carregar histórico.</td></tr>';
+          body.innerHTML = '<tr><td colspan="5" class="text-center text-danger">Erro ao carregar histórico.</td></tr>';
         } finally {
         }
       }
