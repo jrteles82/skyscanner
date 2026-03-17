@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from flask import Flask, Response, jsonify, request, stream_with_context
+from flask import Flask, Response, jsonify, request, stream_with_context, session, redirect, url_for, render_template_string, g
 from pathlib import Path
 import json
 import os
 import time
+import random
 import requests
 import threading
+import sqlite3
+from functools import wraps
 from datetime import datetime
+from werkzeug.security import generate_password_hash, check_password_hash
 
 from skyscanner import (
     CONFIG,
@@ -23,29 +27,27 @@ from skyscanner import (
 )
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+app.secret_key = os.getenv("SKYSCANNER_SECRET_KEY", "dev-change-this-secret")
 
 
 SCAN_INTERVAL_SECONDS = int(os.getenv("SKYSCANNER_FULL_SCAN_EVERY_SECONDS", str(3 * 60 * 60)))
 AUTO_SCAN_ENABLED = os.getenv("SKYSCANNER_AUTO_SCAN", "1") == "1"
+USER_SCAN_POLL_SECONDS = int(os.getenv("SKYSCANNER_USER_SCAN_POLL_SECONDS", "60"))
 _scan_lock = threading.Lock()
 _scan_last_run_at = None
+_user_scheduler_started = False
 
 
-def notify_full_scan(parsed: list[dict], trigger: str = "manual") -> None:
+def build_full_scan_message(parsed: list[dict], trigger: str = "manual") -> str:
     def _price_num(row):
         v = row.get("price")
         return v if isinstance(v, (int, float)) and v is not None else 10**12
 
     if not parsed:
-        msg = (
+        return (
             "────────── ✈️ CONSULTA COMPLETA ✈️ ──────────\n"
             "Sem dados nesta execução."
         )
-        try:
-            send_telegram_message(msg)
-        except Exception:
-            pass
-        return
 
     idas = [r for r in parsed if str(r.get("origin", "")).upper() == "PVH" and str(r.get("destination", "")).upper() != "PVH"]
     voltas = [r for r in parsed if str(r.get("destination", "")).upper() == "PVH"]
@@ -64,7 +66,8 @@ def notify_full_scan(parsed: list[dict], trigger: str = "manual") -> None:
         for i, r in enumerate(idas_ok[:3], start=1):
             medal = "🥇 " if i == 1 else ""
             data_txt = f"{r.get('outbound_date')}" + (f" / {r.get('inbound_date')}" if r.get('inbound_date') else "")
-            lines.append(f"{medal}{r.get('origin')}→{r.get('destination')} | {data_txt} | {r.get('price_fmt')} | {r.get('site')}")
+            vendor = r.get('best_vendor') or '-'
+            lines.append(f"{medal}{r.get('origin')}→{r.get('destination')} | {data_txt} | {r.get('price_fmt')} | {r.get('site')} | vendedor: {vendor}")
     else:
         lines.append("N/D")
 
@@ -73,23 +76,51 @@ def notify_full_scan(parsed: list[dict], trigger: str = "manual") -> None:
         for i, r in enumerate(voltas_ok[:3], start=1):
             medal = "🥇 " if i == 1 else ""
             data_txt = f"{r.get('outbound_date')}" + (f" / {r.get('inbound_date')}" if r.get('inbound_date') else "")
-            lines.append(f"{medal}{r.get('origin')}→{r.get('destination')} | {data_txt} | {r.get('price_fmt')} | {r.get('site')}")
+            vendor = r.get('best_vendor') or '-'
+            lines.append(f"{medal}{r.get('origin')}→{r.get('destination')} | {data_txt} | {r.get('price_fmt')} | {r.get('site')} | vendedor: {vendor}")
     else:
         lines.append("N/D")
 
     total_ok = len([r for r in parsed if r.get("price") is not None])
     lines += ["", f"Resumo: {total_ok}/{len(parsed)} rotas com preço válido."]
+    return "\n".join(lines)
 
-    msg = "\n".join(lines)
+
+def notify_full_scan(parsed: list[dict], trigger: str = "manual", send_fn=None) -> None:
+    msg = build_full_scan_message(parsed, trigger=trigger)
+    sender = send_fn or send_telegram_message
     try:
-        send_telegram_message(msg)
+        sender(msg)
     except Exception:
         pass
 
 
-def run_full_scan(on_row=None):
-    global _scan_last_run_at
-    routes = build_queries()
+def _build_user_routes(conn, user_id: int) -> list[RouteQuery]:
+    rows = conn.execute(
+        """
+        SELECT origin, destination, outbound_date, inbound_date
+        FROM user_routes
+        WHERE user_id = ? AND active = 1
+        ORDER BY id DESC
+        """,
+        (user_id,),
+    ).fetchall()
+    routes = []
+    for r in rows:
+        inbound = (r["inbound_date"] or "").strip()
+        routes.append(
+            RouteQuery(
+                origin=(r["origin"] or "").upper(),
+                destination=(r["destination"] or "").upper(),
+                outbound_date=r["outbound_date"],
+                inbound_date=inbound,
+                trip_type="roundtrip" if inbound else "oneway",
+            )
+        )
+    return routes
+
+
+def run_scan_for_routes(routes: list[RouteQuery], on_row=None):
     db = Database(get_db_path())
     parsed = []
 
@@ -117,6 +148,8 @@ def run_full_scan(on_row=None):
                     "site": result.site,
                     "notes": result.notes,
                     "price_band": band,
+                    "best_vendor": getattr(result, "best_vendor", ""),
+                    "best_vendor_price": getattr(result, "best_vendor_price", None),
                 }
                 parsed.append(row)
                 idx += 1
@@ -139,6 +172,8 @@ def run_full_scan(on_row=None):
                     "site": k.site,
                     "notes": k.notes,
                     "price_band": band,
+                    "best_vendor": getattr(k, "best_vendor", ""),
+                    "best_vendor_price": getattr(k, "best_vendor_price", None),
                 }
                 parsed.append(row_k)
                 idx += 1
@@ -161,6 +196,8 @@ def run_full_scan(on_row=None):
                     "site": m.site,
                     "notes": m.notes,
                     "price_band": band,
+                    "best_vendor": getattr(m, "best_vendor", ""),
+                    "best_vendor_price": getattr(m, "best_vendor_price", None),
                 }
                 parsed.append(row_m)
                 idx += 1
@@ -169,8 +206,53 @@ def run_full_scan(on_row=None):
 
             browser.close()
 
+    return parsed
+
+
+def run_full_scan(on_row=None):
+    global _scan_last_run_at
+    parsed = run_scan_for_routes(build_queries(), on_row=on_row)
     _scan_last_run_at = datetime.now().isoformat()
     return parsed
+
+
+def _create_user_run(conn, user_id: int) -> int:
+    cur = conn.execute(
+        "INSERT INTO user_runs (user_id, started_at, status, summary) VALUES (?, ?, ?, ?)",
+        (user_id, datetime.now().isoformat(), "running", ""),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def _finish_user_run(conn, run_id: int, status: str, summary: str) -> None:
+    conn.execute(
+        "UPDATE user_runs SET finished_at = ?, status = ?, summary = ? WHERE id = ?",
+        (datetime.now().isoformat(), status, summary, run_id),
+    )
+    conn.commit()
+
+
+def run_user_scan(user_id: int, trigger: str = "manual-user"):
+    conn = sqlite3.connect(auth_db_path())
+    conn.row_factory = sqlite3.Row
+    run_id = _create_user_run(conn, user_id)
+    try:
+        routes = _build_user_routes(conn, user_id)
+        if not routes:
+            routes = build_queries()
+        parsed = run_scan_for_routes(routes)
+        msg = build_full_scan_message(parsed, trigger=trigger)
+        send_user_telegram_message(user_id, msg)
+        total_ok = len([r for r in parsed if r.get("price") is not None])
+        summary = f"ok: {total_ok}/{len(parsed)} com preço"
+        _finish_user_run(conn, run_id, "ok", summary)
+        return {"status": "ok", "summary": summary, "parsed": parsed}
+    except Exception as e:
+        _finish_user_run(conn, run_id, "error", str(e)[:500])
+        raise
+    finally:
+        conn.close()
 
 
 def _auto_scan_loop():
@@ -197,7 +279,69 @@ def start_auto_scan_if_needed():
 
     t = threading.Thread(target=_auto_scan_loop, daemon=True)
     t.start()
-    print(f"[auto-scan] ligado: intervalo {SCAN_INTERVAL_SECONDS}s")
+    start_user_scan_scheduler_if_needed()
+    print(f"[auto-scan] ligado: intervalo {SCAN_INTERVAL_SECONDS}s + cron por usuário")
+
+
+def _should_run_user_now(conn, user_id: int, every_hours: int) -> bool:
+    row = conn.execute(
+        "SELECT started_at FROM user_runs WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    if not row or not row["started_at"]:
+        return True
+    try:
+        last_started = datetime.fromisoformat(row["started_at"])
+    except Exception:
+        return True
+    return (datetime.now() - last_started).total_seconds() >= (every_hours * 3600)
+
+
+def _user_scan_scheduler_loop():
+    while True:
+        conn = sqlite3.connect(auth_db_path())
+        conn.row_factory = sqlite3.Row
+        try:
+            users = conn.execute(
+                """
+                SELECT u.id AS user_id,
+                       COALESCE(c.enabled, 1) AS enabled,
+                       COALESCE(c.every_hours, 3) AS every_hours
+                FROM users u
+                LEFT JOIN user_cron c ON c.user_id = u.id
+                """
+            ).fetchall()
+            for u in users:
+                if int(u["enabled"] or 0) != 1:
+                    continue
+                every_hours = max(1, min(24, int(u["every_hours"] or 3)))
+                if not _should_run_user_now(conn, int(u["user_id"]), every_hours):
+                    continue
+                try:
+                    run_user_scan(int(u["user_id"]), trigger="agendada-usuario")
+                    print(f"[user-scan] execução usuário={u['user_id']} concluída")
+                except Exception as e:
+                    print(f"[user-scan] erro usuário={u['user_id']}: {e}")
+        finally:
+            conn.close()
+
+        time.sleep(max(30, USER_SCAN_POLL_SECONDS))
+
+
+def start_user_scan_scheduler_if_needed():
+    global _user_scheduler_started
+    if _user_scheduler_started:
+        return
+
+    is_reloader_main = os.getenv("WERKZEUG_RUN_MAIN") == "true"
+    is_debug = os.getenv("FLASK_DEBUG") == "1"
+    if is_debug and not is_reloader_main:
+        return
+
+    t = threading.Thread(target=_user_scan_scheduler_loop, daemon=True)
+    t.start()
+    _user_scheduler_started = True
+    print(f"[user-scan] scheduler ligado: verificação a cada {USER_SCAN_POLL_SECONDS}s")
 
 
 def get_db_path() -> str:
@@ -208,14 +352,37 @@ def get_db_path() -> str:
     return configured
 
 
-def send_telegram_message(text: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN") or CONFIG.get("telegram_bot_token")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID") or CONFIG.get("telegram_chat_id")
+def send_telegram_message_to(text: str, token: str | None = None, chat_id: str | None = None) -> None:
+    token = token or os.getenv("TELEGRAM_BOT_TOKEN") or CONFIG.get("telegram_bot_token")
+    chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID") or CONFIG.get("telegram_chat_id")
     if not token or not chat_id:
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     requests.post(url, data={"chat_id": chat_id, "text": text}, timeout=20).raise_for_status()
 
+
+def send_telegram_message(text: str) -> None:
+    send_telegram_message_to(text)
+
+
+def send_user_telegram_message(user_id: int, text: str) -> None:
+    conn = sqlite3.connect(auth_db_path())
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT bot_token, chat_id FROM user_telegram WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        if not row:
+            return
+        token = (row["bot_token"] or "").strip()
+        chat_id = (row["chat_id"] or "").strip()
+        if not token or not chat_id:
+            return
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        requests.post(url, data={"chat_id": chat_id, "text": text}, timeout=20).raise_for_status()
+    finally:
+        conn.close()
 
 
 
@@ -246,6 +413,13 @@ def _to_route(query_args) -> RouteQuery:
 
 @app.route("/", methods=["GET"])
 def index():
+    if session.get("user_id"):
+        return redirect(url_for("painel"))
+    return redirect(url_for("auth_login"))
+
+
+@app.route("/app", methods=["GET"])
+def app_front():
     return app.send_static_file("index.html")
 
 
@@ -301,56 +475,129 @@ def kayak_url(route: RouteQuery) -> str:
     return f"https://www.kayak.com.br/flights/{o}-{d}/{out}?sort=bestflight_a"
 
 
+def _extract_price_with_selectors(page, selectors: list[str], timeout_each_ms: int = 4500):
+    """Tenta extrair preço por seletores específicos; fallback no texto completo."""
+    candidates: list[str] = []
+
+    for sel in selectors:
+        try:
+            page.wait_for_selector(sel, timeout=timeout_each_ms)
+            loc = page.locator(sel)
+            count = min(loc.count(), 8)
+            for i in range(count):
+                txt = (loc.nth(i).inner_text(timeout=1200) or "").strip()
+                if txt:
+                    candidates.append(txt)
+        except Exception:
+            continue
+
+    if not candidates:
+        try:
+            candidates.append(page.locator("body").inner_text(timeout=6000))
+        except Exception:
+            pass
+
+    for txt in candidates:
+        p = parse_price_brl(txt)
+        if p is not None:
+            return p
+    return None
+
+
 def search_kayak(route: RouteQuery) -> FlightResult:
     url = kayak_url(route)
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=bool(CONFIG.get("headless", True)))
-        page = browser.new_page(locale="pt-BR")
-        page.set_default_timeout(int(CONFIG.get("timeout_ms", 45000)))
-        notes = []
+    timeout_ms = int(CONFIG.get("timeout_ms", 45000))
+    attempts = [
+        {"label": "headless", "headless": True, "persistent": False},
+        {"label": "headed-persistent", "headless": False, "persistent": True},
+    ]
+    errors = []
+
+    for cfg in attempts:
         try:
-            page.goto(url, wait_until="domcontentloaded")
-            time.sleep(8)
-            try:
-                page.mouse.move(150, 220)
-                page.mouse.wheel(0, 400)
-                time.sleep(1)
-            except Exception:
-                pass
+            with sync_playwright() as p:
+                if cfg["persistent"]:
+                    user_data_dir = os.getenv("KAYAK_USER_DATA_DIR", "/tmp/kayak-profile")
+                    context = p.chromium.launch_persistent_context(
+                        user_data_dir=user_data_dir,
+                        headless=cfg["headless"],
+                        locale="pt-BR",
+                    )
+                    page = context.new_page()
+                    close_browser = False
+                else:
+                    browser = p.chromium.launch(headless=cfg["headless"])
+                    context = browser.new_context(
+                        locale="pt-BR",
+                        user_agent=(
+                            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+                        ),
+                    )
+                    page = context.new_page()
+                    close_browser = True
 
-            text = page.locator("body").inner_text(timeout=5000)
-            price = parse_price_brl(text)
-            if price is None:
-                notes.append("Preço não identificado automaticamente no Kayak")
+                page.set_default_timeout(timeout_ms)
+                notes = [f"tentativa={cfg['label']}"]
+                page.goto(url, wait_until="domcontentloaded")
+                try:
+                    page.wait_for_load_state("networkidle", timeout=12000)
+                except Exception:
+                    pass
+                time.sleep(random.uniform(8, 12))
 
-            return FlightResult(
-                site="kayak",
-                origin=route.origin,
-                destination=route.destination,
-                outbound_date=route.outbound_date,
-                inbound_date=route.inbound_date,
-                trip_type=route.trip_type,
-                price=price,
-                currency="BRL",
-                url=page.url,
-                notes=" | ".join(notes),
-            )
+                try:
+                    page.mouse.move(150, 220)
+                    page.mouse.wheel(0, 500)
+                    time.sleep(random.uniform(1.0, 2.2))
+                except Exception:
+                    pass
+
+                price = _extract_price_with_selectors(page, [
+                    '[data-testid*="price"]',
+                    '[class*="price"]',
+                    '[aria-label*="R$"]',
+                    'span:has-text("R$")',
+                    'div:has-text("R$")',
+                ])
+                if price is None:
+                    notes.append("Preço não identificado automaticamente no Kayak (seletores+fallback)")
+
+                result = FlightResult(
+                    site="kayak",
+                    origin=route.origin,
+                    destination=route.destination,
+                    outbound_date=route.outbound_date,
+                    inbound_date=route.inbound_date,
+                    trip_type=route.trip_type,
+                    price=price,
+                    currency="BRL",
+                    url=page.url,
+                    notes=" | ".join(notes),
+                )
+
+                context.close()
+                if close_browser:
+                    browser.close()
+
+                if price is not None and "captcha" not in (result.url or "").lower():
+                    return result
+                errors.append(f"{cfg['label']}: bloqueado/sem preço")
         except Exception as e:
-            return FlightResult(
-                site="kayak",
-                origin=route.origin,
-                destination=route.destination,
-                outbound_date=route.outbound_date,
-                inbound_date=route.inbound_date,
-                trip_type=route.trip_type,
-                price=None,
-                currency="BRL",
-                url=url,
-                notes=f"erro Kayak: {e}",
-            )
-        finally:
-            page.close()
-            browser.close()
+            errors.append(f"{cfg['label']}: {e}")
+
+    return FlightResult(
+        site="kayak",
+        origin=route.origin,
+        destination=route.destination,
+        outbound_date=route.outbound_date,
+        inbound_date=route.inbound_date,
+        trip_type=route.trip_type,
+        price=None,
+        currency="BRL",
+        url=url,
+        notes="erro Kayak: " + " || ".join(errors),
+    )
 
 
 def is_kayak_blocked(result: FlightResult) -> bool:
@@ -372,52 +619,97 @@ def maxmilhas_url(route: RouteQuery) -> str:
 def search_maxmilhas(route: RouteQuery) -> FlightResult:
     url = maxmilhas_url(route)
     timeout_ms = int(CONFIG.get("timeout_ms", 45000))
-    notes = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=bool(CONFIG.get("headless", True)))
-        page = browser.new_page(locale="pt-BR")
-        page.set_default_timeout(timeout_ms)
-        try:
-            for attempt, backoff in [(1, 8), (2, 20), (3, 45)]:
-                try:
-                    page.goto(url, wait_until="domcontentloaded")
-                    time.sleep(7)
-                    text = page.locator("body").inner_text(timeout=5000)
-                    price = parse_price_brl(text)
-                    if price is not None:
-                        return FlightResult(
-                            site="maxmilhas",
-                            origin=route.origin,
-                            destination=route.destination,
-                            outbound_date=route.outbound_date,
-                            inbound_date=route.inbound_date,
-                            trip_type=route.trip_type,
-                            price=price,
-                            currency="BRL",
-                            url=page.url,
-                            notes=f"tentativa={attempt}",
-                        )
-                    notes.append(f"tentativa {attempt}: sem tarifa extraível")
-                except Exception as e:
-                    notes.append(f"tentativa {attempt}: erro {e}")
-                if attempt < 3:
-                    time.sleep(backoff)
+    errors = []
 
-            return FlightResult(
-                site="maxmilhas",
-                origin=route.origin,
-                destination=route.destination,
-                outbound_date=route.outbound_date,
-                inbound_date=route.inbound_date,
-                trip_type=route.trip_type,
-                price=None,
-                currency="BRL",
-                url=page.url if page else url,
-                notes=" | ".join(notes) if notes else "sem tarifa extraível",
-            )
-        finally:
-            page.close()
-            browser.close()
+    browser_attempts = [
+        {"label": "headed-persistent", "headless": False, "persistent": True},
+    ]
+
+    for bcfg in browser_attempts:
+        try:
+            with sync_playwright() as p:
+                if bcfg["persistent"]:
+                    user_data_dir = os.getenv("MAXMILHAS_USER_DATA_DIR", "/tmp/maxmilhas-profile")
+                    context = p.chromium.launch_persistent_context(
+                        user_data_dir=user_data_dir,
+                        headless=bcfg["headless"],
+                        locale="pt-BR",
+                    )
+                    page = context.new_page()
+                    close_browser = False
+                else:
+                    browser = p.chromium.launch(headless=bcfg["headless"])
+                    context = browser.new_context(locale="pt-BR")
+                    page = context.new_page()
+                    close_browser = True
+
+                page.set_default_timeout(timeout_ms)
+                notes = [f"modo={bcfg['label']}"]
+
+                for attempt, backoff in [(1, 8), (2, 20), (3, 45)]:
+                    try:
+                        page.goto(url, wait_until="domcontentloaded")
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=12000)
+                        except Exception:
+                            pass
+                        time.sleep(random.uniform(7, 11))
+                        try:
+                            page.mouse.move(180, 250)
+                            page.mouse.wheel(0, 450)
+                            time.sleep(random.uniform(0.8, 2.0))
+                        except Exception:
+                            pass
+
+                        price = _extract_price_with_selectors(page, [
+                            '[data-testid*="price"]',
+                            '[class*="price"]',
+                            'span:has-text("R$")',
+                            'strong:has-text("R$")',
+                            'div:has-text("R$")',
+                        ])
+                        if price is not None:
+                            result = FlightResult(
+                                site="maxmilhas",
+                                origin=route.origin,
+                                destination=route.destination,
+                                outbound_date=route.outbound_date,
+                                inbound_date=route.inbound_date,
+                                trip_type=route.trip_type,
+                                price=price,
+                                currency="BRL",
+                                url=page.url,
+                                notes=f"modo={bcfg['label']} | tentativa={attempt}",
+                            )
+                            context.close()
+                            if close_browser:
+                                browser.close()
+                            return result
+                        notes.append(f"tentativa {attempt}: sem tarifa extraível")
+                    except Exception as e:
+                        notes.append(f"tentativa {attempt}: erro {e}")
+                    if attempt < 3:
+                        time.sleep(backoff)
+
+                context.close()
+                if close_browser:
+                    browser.close()
+                errors.append(" | ".join(notes))
+        except Exception as e:
+            errors.append(f"modo {bcfg['label']}: {e}")
+
+    return FlightResult(
+        site="maxmilhas",
+        origin=route.origin,
+        destination=route.destination,
+        outbound_date=route.outbound_date,
+        inbound_date=route.inbound_date,
+        trip_type=route.trip_type,
+        price=None,
+        currency="BRL",
+        url=url,
+        notes=" | ".join(errors) if errors else "sem tarifa extraível",
+    )
 
 
 def is_maxmilhas_blocked(result: FlightResult) -> bool:
@@ -471,6 +763,10 @@ def search_skyscanner(route: RouteQuery) -> FlightResult:
 
                 page.set_default_timeout(timeout_ms)
                 page.goto(url, wait_until="domcontentloaded")
+                try:
+                    page.wait_for_load_state("networkidle", timeout=12000)
+                except Exception:
+                    pass
                 time.sleep(9)
 
                 # tentativa de interação mínima para reduzir falso bloqueio
@@ -482,8 +778,13 @@ def search_skyscanner(route: RouteQuery) -> FlightResult:
                 except Exception:
                     pass
 
-                text = page.locator("body").inner_text(timeout=6000)
-                price = parse_price_brl(text)
+                price = _extract_price_with_selectors(page, [
+                    '[data-testid*="price"]',
+                    '[class*="Price"]',
+                    '[class*="price"]',
+                    'span:has-text("R$")',
+                    'div:has-text("R$")',
+                ])
                 final_url = page.url
 
                 notes = []
@@ -585,6 +886,11 @@ def consulta():
     db.save(result, band)
 
     try:
+        vendor_line = ""
+        if getattr(result, "best_vendor", ""):
+            vendor_price = format_brl(getattr(result, "best_vendor_price", None))
+            vendor_line = f"\nOnde comprar mais barato: {result.best_vendor} ({vendor_price})"
+
         resumo = (
             "────────── ✈️ CONSULTA RÁPIDA ✈️ ──────────\n"
             f"Rota: {route.origin} → {route.destination}\n"
@@ -594,6 +900,7 @@ def consulta():
             + f"Preço: {format_brl(result.price)}\n"
             + f"Classificação: {band}\n"
             + f"Fonte: {result.site}"
+            + vendor_line
         )
         send_telegram_message(resumo)
     except Exception:
@@ -616,6 +923,8 @@ def consulta():
                 "currency": result.currency,
                 "url": result.url,
                 "notes": result.notes,
+                "best_vendor": getattr(result, "best_vendor", ""),
+                "best_vendor_price": getattr(result, "best_vendor_price", None),
             },
             "historico": {
                 "min_price": min_price,
@@ -659,7 +968,8 @@ def historico():
     rows = db.conn.execute(
         """
         SELECT created_at, site, origin, destination, outbound_date, inbound_date,
-               price, currency, price_band, notes, url
+               price, currency, price_band, notes, url,
+               best_vendor, best_vendor_price, booking_options_json
         FROM results
         ORDER BY id DESC
         LIMIT ?
@@ -714,6 +1024,8 @@ def cron_stream():
                         "site": result.site,
                         "notes": result.notes,
                         "price_band": band,
+                        "best_vendor": getattr(result, "best_vendor", ""),
+                        "best_vendor_price": getattr(result, "best_vendor_price", None),
                     }
                     parsed.append(row)
                     payload = {"type": "row", "index": idx, "total": total, "item": row}
@@ -737,6 +1049,494 @@ def cron_stream():
     )
 
 
+
+
+@app.route("/app-page", methods=["GET"])
+def app_page():
+    if not session.get("user_id"):
+        return redirect(url_for("auth_login"))
+    return render_template_string(
+        """
+        <!doctype html>
+        <html lang='pt-BR'>
+        <head>
+          <meta charset='utf-8'>
+          <meta name='viewport' content='width=device-width, initial-scale=1'>
+          <title>App Consultas</title>
+          <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css' rel='stylesheet'>
+        </head>
+        <body class='bg-light'>
+          <nav class='navbar navbar-dark bg-dark'>
+            <div class='container-fluid'>
+              <span class='navbar-brand mb-0 h1'>App Consultas</span>
+              <a class='btn btn-outline-light btn-sm' href='{{ url_for("painel") }}'>Voltar ao Painel</a>
+            </div>
+          </nav>
+          <div class='container-fluid p-0'>
+            <iframe src='{{ url_for("app_front") }}' style='width:100%;height:92vh;border:0;'></iframe>
+          </div>
+        </body>
+        </html>
+        """
+    )
+
+def auth_db_path() -> str:
+    return get_db_path()
+
+
+def get_auth_db():
+    if "auth_db" not in g:
+        conn = sqlite3.connect(auth_db_path())
+        conn.row_factory = sqlite3.Row
+        g.auth_db = conn
+    return g.auth_db
+
+
+def init_auth_tables():
+    db = sqlite3.connect(auth_db_path())
+    cur = db.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_routes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            origin TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            outbound_date TEXT NOT NULL,
+            inbound_date TEXT DEFAULT '',
+            active INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_telegram (
+            user_id INTEGER PRIMARY KEY,
+            bot_token TEXT,
+            chat_id TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_cron (
+            user_id INTEGER PRIMARY KEY,
+            enabled INTEGER DEFAULT 1,
+            every_hours INTEGER DEFAULT 3,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL,
+            summary TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    db.commit()
+    db.close()
+
+
+@app.teardown_appcontext
+def close_auth_db(_exc):
+    db = g.pop("auth_db", None)
+    if db is not None:
+        db.close()
+
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not session.get("user_id"):
+            return redirect(url_for("auth_login"))
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def current_user():
+    uid = session.get("user_id")
+    if not uid:
+        return None
+    db = get_auth_db()
+    return db.execute("SELECT id, email FROM users WHERE id = ?", (uid,)).fetchone()
+
+
+@app.route("/auth/register", methods=["GET", "POST"])
+def auth_register():
+    error = ""
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        if not email or len(password) < 6:
+            error = "Informe email válido e senha com pelo menos 6 caracteres."
+        else:
+            db = get_auth_db()
+            try:
+                db.execute(
+                    "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
+                    (email, generate_password_hash(password), datetime.now().isoformat()),
+                )
+                db.commit()
+                return redirect(url_for("auth_login"))
+            except sqlite3.IntegrityError:
+                error = "Esse email já está cadastrado."
+
+    return render_template_string(
+        """
+        <!doctype html>
+        <html lang='pt-BR'>
+        <head>
+          <meta charset='utf-8'>
+          <meta name='viewport' content='width=device-width, initial-scale=1'>
+          <title>Cadastro | Skyscanner Admin</title>
+          <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css' rel='stylesheet'>
+        </head>
+        <body class='bg-light d-flex align-items-center' style='min-height:100vh;'>
+          <div class='container'>
+            <div class='row justify-content-center'>
+              <div class='col-md-5'>
+                <div class='card shadow-sm'>
+                  <div class='card-header bg-primary text-white'>Cadastro</div>
+                  <div class='card-body'>
+                    <form method='post'>
+                      <div class='mb-3'><input class='form-control' name='email' type='email' placeholder='Email' required></div>
+                      <div class='mb-3'><input class='form-control' name='password' type='password' placeholder='Senha (mín 6)' required></div>
+                      <button class='btn btn-primary w-100' type='submit'>Cadastrar</button>
+                    </form>
+                    {% if error %}<div class='alert alert-danger mt-3 mb-0'>{{error}}</div>{% endif %}
+                    <div class='mt-3 text-center'><a href='{{ url_for("auth_login") }}'>Já tenho login</a></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+        """,
+        error=error,
+    )
+
+
+@app.route("/auth/login", methods=["GET", "POST"])
+def auth_login():
+    error = ""
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        db = get_auth_db()
+        user = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        if not user or not check_password_hash(user["password_hash"], password):
+            error = "Login inválido."
+        else:
+            session["user_id"] = user["id"]
+            return redirect(url_for("painel"))
+
+    return render_template_string(
+        """
+        <!doctype html>
+        <html lang='pt-BR'>
+        <head>
+          <meta charset='utf-8'>
+          <meta name='viewport' content='width=device-width, initial-scale=1'>
+          <title>Login | Skyscanner Admin</title>
+          <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css' rel='stylesheet'>
+        </head>
+        <body class='bg-light d-flex align-items-center' style='min-height:100vh;'>
+          <div class='container'>
+            <div class='row justify-content-center'>
+              <div class='col-md-5'>
+                <div class='card shadow-sm'>
+                  <div class='card-header bg-dark text-white'>Skyscanner Admin</div>
+                  <div class='card-body'>
+                    <form method='post'>
+                      <div class='mb-3'><input class='form-control' name='email' type='email' placeholder='Email' required></div>
+                      <div class='mb-3'><input class='form-control' name='password' type='password' placeholder='Senha' required></div>
+                      <button class='btn btn-dark w-100' type='submit'>Entrar</button>
+                    </form>
+                    {% if error %}<div class='alert alert-danger mt-3 mb-0'>{{error}}</div>{% endif %}
+                    <div class='mt-3 text-center'><a href='{{ url_for("auth_register") }}'>Criar conta</a></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+        """,
+        error=error,
+    )
+
+
+@app.route("/auth/logout")
+def auth_logout():
+    session.clear()
+    return redirect(url_for("auth_login"))
+
+
+@app.route("/painel", methods=["GET"])
+@login_required
+def painel():
+    db = get_auth_db()
+    user = current_user()
+    routes = db.execute(
+        "SELECT id, origin, destination, outbound_date, inbound_date, active FROM user_routes WHERE user_id = ? ORDER BY id DESC",
+        (user["id"],),
+    ).fetchall()
+    tg = db.execute("SELECT bot_token, chat_id FROM user_telegram WHERE user_id = ?", (user["id"],)).fetchone()
+    cron = db.execute("SELECT enabled, every_hours FROM user_cron WHERE user_id = ?", (user["id"],)).fetchone()
+    last_run = db.execute("SELECT started_at, finished_at, status, summary FROM user_runs WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user["id"],)).fetchone()
+
+    return render_template_string(
+        """
+        <!doctype html>
+        <html lang='pt-BR'>
+        <head>
+          <meta charset='utf-8'>
+          <meta name='viewport' content='width=device-width, initial-scale=1'>
+          <title>Painel Admin | Skyscanner</title>
+          <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css' rel='stylesheet'>
+          <link href='https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css' rel='stylesheet'>
+          <style>
+            body { background:#f4f6f9; }
+            .sidebar { min-height: 100vh; background: #343a40; }
+            .sidebar a { color: #c2c7d0; text-decoration: none; display:block; padding:.65rem 1rem; }
+            .sidebar a:hover { background:#495057; color:#fff; }
+            .brand { color:#fff; font-weight:700; padding:1rem; border-bottom:1px solid #495057; }
+            .topbar { background:#fff; border-bottom:1px solid #dee2e6; }
+            .kpi { border-left:4px solid #0d6efd; }
+            body.dark-mode { background:#1f2d3d; color:#dee2e6; }
+            body.dark-mode .card, body.dark-mode .topbar { background:#2c3b4b; color:#dee2e6; border-color:#3d4b5a; }
+            body.dark-mode .text-muted { color:#adb5bd !important; }
+            body.sidebar-collapsed .sidebar { width: 72px; }
+            body.sidebar-collapsed .sidebar .brand, body.sidebar-collapsed .sidebar a { text-align:center; }
+            body.sidebar-collapsed .sidebar a { font-size:0; }
+            body.sidebar-collapsed .sidebar a i { font-size:1rem; margin:0 !important; }
+          </style>
+        </head>
+        <body class='bg-light'>
+          <div class='container-fluid'>
+            <div class='row'>
+              <aside class='col-md-3 col-lg-2 p-0 sidebar'>
+                <div class='brand'><i class='bi bi-activity'></i> Skyscanner Admin</div>
+                <a href='#rotas'><i class='bi bi-signpost-split me-2'></i>Rotas</a>
+                <a href='#telegram'><i class='bi bi-telegram me-2'></i>Telegram</a>
+                <a href='#cron'><i class='bi bi-clock-history me-2'></i>Cron</a>
+                <a href='{{ url_for("app_page") }}'><i class='bi bi-window me-2'></i>App Consultas</a>
+                <a href='{{ url_for("auth_logout") }}'><i class='bi bi-box-arrow-right me-2'></i>Sair</a>
+              </aside>
+              <main class='col-md-9 col-lg-10 p-0'>
+                <div class='topbar d-flex justify-content-between align-items-center px-4 py-3'>
+                  <div><strong>Painel</strong> <span class='text-muted'>/ Dashboard</span></div>
+                  <div class='d-flex align-items-center gap-2'>
+                    <button class='btn btn-sm btn-outline-secondary' type='button' onclick='toggleSidebar()'><i class='bi bi-list'></i></button>
+                    <button class='btn btn-sm btn-outline-secondary' type='button' onclick='toggleTheme()'><i class='bi bi-moon-stars'></i></button>
+                    <div class='text-muted small'>{{user['email']}}</div>
+                  </div>
+                </div>
+                <div class='p-4'>
+                <div class='row g-3 mb-3'>
+                  <div class='col-md-4'><div class='card kpi'><div class='card-body'><div class='text-muted'>Rotas</div><div class='h4 mb-0'>{{ routes|length }}</div></div></div></div>
+                  <div class='col-md-4'><div class='card kpi'><div class='card-body'><div class='text-muted'>Cron</div><div class='h6 mb-0'>{% if not cron or cron['enabled'] %}Ativo{% else %}Inativo{% endif %} ({{ cron['every_hours'] if cron else 3 }}h)</div></div></div></div>
+                  <div class='col-md-4'><div class='card kpi'><div class='card-body'><div class='text-muted'>Última execução</div><div class='small mb-0'>{% if last_run %}{{last_run['status']}}{% else %}sem execução{% endif %}</div></div></div></div>
+                </div>
+
+                <div class='card mb-3 shadow-sm' id='rotas'>
+                  <div class='card-header'><i class='bi bi-signpost-split me-2'></i>Rotas configuradas</div>
+                  <div class='card-body'>
+                    <form method='post' action='{{ url_for("add_route") }}' class='row g-2 mb-3'>
+                      <div class='col-md-2'><input class='form-control' name='origin' placeholder='Origem' required></div>
+                      <div class='col-md-2'><input class='form-control' name='destination' placeholder='Destino' required></div>
+                      <div class='col-md-3'><input class='form-control' name='outbound_date' type='date' required></div>
+                      <div class='col-md-3'><input class='form-control' name='inbound_date' type='date'></div>
+                      <div class='col-md-2 d-grid'><button class='btn btn-primary' type='submit'>Adicionar</button></div>
+                    </form>
+                    <ul class='list-group'>
+                      {% for r in routes %}
+                        <li class='list-group-item d-flex justify-content-between align-items-center'>
+                          <span>{{r['origin']}} → {{r['destination']}} | {{r['outbound_date']}} {% if r['inbound_date'] %}/ {{r['inbound_date']}}{% endif %}</span>
+                          <a class='btn btn-sm btn-outline-danger' href='{{ url_for("delete_route", route_id=r["id"]) }}'>Excluir</a>
+                        </li>
+                      {% else %}
+                        <li class='list-group-item'>Nenhuma rota cadastrada.</li>
+                      {% endfor %}
+                    </ul>
+                  </div>
+                </div>
+
+                <div class='card mb-3 shadow-sm' id='telegram'>
+                  <div class='card-header'><i class='bi bi-telegram me-2'></i>Telegram do usuário</div>
+                  <div class='card-body'>
+                    <form method='post' action='{{ url_for("save_telegram") }}' class='row g-2'>
+                      <div class='col-md-6'><input class='form-control' name='bot_token' placeholder='Bot token' value='{{ tg["bot_token"] if tg else "" }}'></div>
+                      <div class='col-md-4'><input class='form-control' name='chat_id' placeholder='Chat ID' value='{{ tg["chat_id"] if tg else "" }}'></div>
+                      <div class='col-md-2 d-grid'><button class='btn btn-success' type='submit'>Salvar</button></div>
+                    </form>
+                  </div>
+                </div>
+
+                <div class='card shadow-sm' id='cron'>
+                  <div class='card-header'><i class='bi bi-clock-history me-2'></i>Cron do usuário</div>
+                  <div class='card-body'>
+                    <form method='post' action='{{ url_for("save_cron") }}' class='row g-2 align-items-center'>
+                      <div class='col-md-2 form-check ms-2'>
+                        <input class='form-check-input' type='checkbox' name='enabled' id='enabled' {% if not cron or cron['enabled'] %}checked{% endif %}>
+                        <label class='form-check-label' for='enabled'>Ativo</label>
+                      </div>
+                      <div class='col-md-3'><input class='form-control' name='every_hours' type='number' min='1' max='24' value='{{ cron["every_hours"] if cron else 3 }}'></div>
+                      <div class='col-md-2 d-grid'><button class='btn btn-primary' type='submit'>Salvar</button></div>
+                    </form>
+                    <form method='post' action='{{ url_for("run_now_user") }}' class='mt-3'>
+                      <button class='btn btn-warning' type='submit'>Executar agora</button>
+                    </form>
+                    <div class='mt-3'><strong>Última execução:</strong><br>
+                      {% if last_run %}
+                        {{last_run['started_at']}} → {{last_run['finished_at']}} | {{last_run['status']}} | {{last_run['summary']}}
+                      {% else %}
+                        sem execução
+                      {% endif %}
+                    </div>
+                  </div>
+                </div>
+
+
+                </div>
+              </main>
+            </div>
+          </div>
+        <script>
+          function toggleTheme() {
+            document.body.classList.toggle('dark-mode');
+            localStorage.setItem('adminThemeDark', document.body.classList.contains('dark-mode') ? '1' : '0');
+          }
+          function toggleSidebar() {
+            document.body.classList.toggle('sidebar-collapsed');
+            localStorage.setItem('adminSidebarCollapsed', document.body.classList.contains('sidebar-collapsed') ? '1' : '0');
+          }
+          (function restoreUiState() {
+            if (localStorage.getItem('adminThemeDark') === '1') document.body.classList.add('dark-mode');
+            if (localStorage.getItem('adminSidebarCollapsed') === '1') document.body.classList.add('sidebar-collapsed');
+          })();
+        </script>
+        </body>
+        </html>
+        """,
+        user=user,
+        routes=routes,
+        tg=tg,
+        cron=cron,
+        last_run=last_run,
+    )
+
+
+@app.route("/painel/route/add", methods=["POST"])
+@login_required
+def add_route():
+    db = get_auth_db()
+    user = current_user()
+    db.execute(
+        "INSERT INTO user_routes (user_id, origin, destination, outbound_date, inbound_date, active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
+        (
+            user["id"],
+            request.form.get("origin", "").strip().upper(),
+            request.form.get("destination", "").strip().upper(),
+            request.form.get("outbound_date", "").strip(),
+            request.form.get("inbound_date", "").strip(),
+            datetime.now().isoformat(),
+        ),
+    )
+    db.commit()
+    return redirect(url_for("painel"))
+
+
+@app.route("/painel/route/delete/<int:route_id>", methods=["GET"])
+@login_required
+def delete_route(route_id: int):
+    db = get_auth_db()
+    user = current_user()
+    db.execute("DELETE FROM user_routes WHERE id = ? AND user_id = ?", (route_id, user["id"]))
+    db.commit()
+    return redirect(url_for("painel"))
+
+
+@app.route("/painel/telegram", methods=["POST"])
+@login_required
+def save_telegram():
+    db = get_auth_db()
+    user = current_user()
+    db.execute(
+        """
+        INSERT INTO user_telegram (user_id, bot_token, chat_id, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          bot_token = excluded.bot_token,
+          chat_id = excluded.chat_id,
+          updated_at = excluded.updated_at
+        """,
+        (
+            user["id"],
+            request.form.get("bot_token", "").strip(),
+            request.form.get("chat_id", "").strip(),
+            datetime.now().isoformat(),
+        ),
+    )
+    db.commit()
+    return redirect(url_for("painel"))
+
+
+@app.route("/painel/run-now", methods=["POST"])
+@login_required
+def run_now_user():
+    user = current_user()
+    run_user_scan(int(user["id"]), trigger="painel-manual", notify=True)
+    return redirect(url_for("painel"))
+
+
+@app.route("/painel/cron", methods=["POST"])
+@login_required
+def save_cron():
+    db = get_auth_db()
+    user = current_user()
+    enabled = 1 if request.form.get("enabled") else 0
+    every_hours = max(1, min(24, int(request.form.get("every_hours", 3))))
+    db.execute(
+        """
+        INSERT INTO user_cron (user_id, enabled, every_hours, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          enabled = excluded.enabled,
+          every_hours = excluded.every_hours,
+          updated_at = excluded.updated_at
+        """,
+        (user["id"], enabled, every_hours, datetime.now().isoformat()),
+    )
+    db.commit()
+    return redirect(url_for("painel"))
+
+
 if __name__ == "__main__":
+    init_auth_tables()
     start_auto_scan_if_needed()
     app.run(debug=True)

@@ -34,6 +34,7 @@ Observações:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sqlite3
@@ -103,6 +104,9 @@ class FlightResult:
     currency: str = "BRL"
     url: str = ""
     notes: str = ""
+    best_vendor: str = ""
+    best_vendor_price: Optional[float] = None
+    booking_options_json: str = ""
 
 
 def utc_now_iso() -> str:
@@ -137,7 +141,10 @@ class Database:
                 currency TEXT,
                 url TEXT,
                 notes TEXT,
-                price_band TEXT
+                price_band TEXT,
+                best_vendor TEXT,
+                best_vendor_price REAL,
+                booking_options_json TEXT
             )
             """
         )
@@ -147,6 +154,18 @@ class Database:
             ON results (origin, destination, outbound_date, inbound_date, created_at)
             """
         )
+
+        # Migrações leves para bases já existentes
+        for ddl in [
+            "ALTER TABLE results ADD COLUMN best_vendor TEXT",
+            "ALTER TABLE results ADD COLUMN best_vendor_price REAL",
+            "ALTER TABLE results ADD COLUMN booking_options_json TEXT",
+        ]:
+            try:
+                cur.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
+
         self.conn.commit()
 
     def save(self, result: FlightResult, price_band: str) -> None:
@@ -154,8 +173,9 @@ class Database:
             """
             INSERT INTO results (
                 created_at, site, origin, destination, outbound_date, inbound_date,
-                price, currency, url, notes, price_band
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                price, currency, url, notes, price_band,
+                best_vendor, best_vendor_price, booking_options_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 utc_now_iso(),
@@ -169,6 +189,9 @@ class Database:
                 result.url,
                 result.notes,
                 price_band,
+                result.best_vendor,
+                result.best_vendor_price,
+                result.booking_options_json,
             ),
         )
         self.conn.commit()
@@ -308,6 +331,48 @@ class GoogleFlightsScraper:
     def __init__(self, browser: Browser):
         self.browser = browser
 
+    def _open_best_flight_details_if_possible(self, page: Page) -> None:
+        click_candidates = [
+            ("button", "Selecionar voo"),
+            ("button", "Ver voos"),
+            ("button", "Selecionar"),
+            ("link", "Selecionar voo"),
+            ("link", "Ver voos"),
+        ]
+        for role, label in click_candidates:
+            try:
+                locator = page.get_by_role(role, name=label)
+                if locator.count() > 0:
+                    locator.first.click(timeout=2500)
+                    time.sleep(2)
+                    return
+            except Exception:
+                pass
+
+    def _extract_booking_options(self, page: Page) -> tuple[str, Optional[float], list[dict]]:
+        try:
+            text = page.locator("body").inner_text(timeout=7000)
+        except Exception:
+            return "", None, []
+
+        # Ex.: "Reserve com a Zupper   R$ 1.392"
+        matches = re.findall(r"Reserve com a\s+([^\n\r]+?)\s+R\$\s*([\d\.]+(?:,\d{2})?)", text, flags=re.IGNORECASE)
+        options = []
+        for vendor, raw_price in matches:
+            vendor = (vendor or "").strip()
+            try:
+                price = float(raw_price.replace(".", "").replace(",", "."))
+            except Exception:
+                continue
+            if vendor:
+                options.append({"vendor": vendor, "price": price})
+
+        if not options:
+            return "", None, []
+
+        best = sorted(options, key=lambda x: x["price"])[0]
+        return best["vendor"], best["price"], options
+
     def search(self, route: RouteQuery) -> FlightResult:
         page = self.browser.new_page(locale="pt-BR")
         page.set_default_timeout(int(CONFIG["timeout_ms"]))
@@ -317,6 +382,7 @@ class GoogleFlightsScraper:
             page.goto(url, wait_until="domcontentloaded")
             self._accept_cookies_if_present(page)
             time.sleep(CONFIG["settle_seconds"])
+            self._open_best_flight_details_if_possible(page)
 
             # Tentativas de capturar o menor preço visível em pt-BR.
             text_chunks = []
@@ -335,6 +401,11 @@ class GoogleFlightsScraper:
 
             combined = "\n".join(text_chunks)
             price = parse_price_brl(combined)
+            best_vendor, best_vendor_price, options = self._extract_booking_options(page)
+            if best_vendor:
+                notes.append(f"melhor_vendedor={best_vendor} ({format_brl(best_vendor_price)})")
+                if best_vendor_price is not None and (price is None or best_vendor_price < price):
+                    price = best_vendor_price
             if price is None:
                 notes.append("Preço não identificado automaticamente; ajuste de seletor pode ser necessário.")
 
@@ -348,7 +419,10 @@ class GoogleFlightsScraper:
                 price=price,
                 currency="BRL",
                 url=page.url,
-                notes=" ".join(notes),
+                notes=" | ".join(notes),
+                best_vendor=best_vendor,
+                best_vendor_price=best_vendor_price,
+                booking_options_json=json.dumps(options, ensure_ascii=False) if options else "",
             )
         except PlaywrightTimeoutError:
             return FlightResult(
