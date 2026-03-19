@@ -666,6 +666,9 @@ class GoogleFlightsScraper:
             booking_options = []
             final_price = None
             booking_opened = False
+            visible_min_price = min((item.get("price") for item in cards if item.get("price") is not None), default=None)
+            if visible_min_price is not None:
+                notes.append(f"visible_min_price={format_brl(visible_min_price)}")
 
             ranked_cards = self._sort_candidate_cards(cards, summary_price)
             max_attempts = min(len(ranked_cards), 4)
@@ -677,7 +680,7 @@ class GoogleFlightsScraper:
                     notes.append(f"booking_aberto_no_card={idx}")
                     best_vendor, best_vendor_price, booking_options = self._extract_booking_options(page)
                     if best_vendor:
-                        final_price = best_vendor_price if best_vendor_price is not None else price
+                        notes.append(f"booking_best_price_card_{idx}={format_brl(best_vendor_price)}")
                         break
                     notes.append(f"booking_sem_vendor_no_card={idx}")
                     try:
@@ -690,18 +693,26 @@ class GoogleFlightsScraper:
 
             if not booking_opened and ranked_cards:
                 fallback = ranked_cards[0]
-                final_price = fallback.get("price")
-                notes.append(f"fallback_primeira_lista={format_brl(final_price)}")
+                notes.append(f"fallback_primeira_lista={format_brl(fallback.get('price'))}")
 
             if best_vendor:
                 notes.append(f"melhor_vendedor={best_vendor} ({format_brl(best_vendor_price)})")
                 notes.append(f"opcoes_reserva={len(booking_options)}")
 
-            if final_price is None and best_vendor_price is not None:
-                final_price = best_vendor_price
+            candidates = []
+            if summary_price is not None:
+                candidates.append(("summary", summary_price))
+            if visible_min_price is not None:
+                candidates.append(("visible_list", visible_min_price))
+            if best_vendor_price is not None:
+                candidates.append(("booking", best_vendor_price))
 
-            if final_price is None and ranked_cards:
+            if candidates:
+                source, final_price = min(candidates, key=lambda item: item[1])
+                notes.append(f"final_price_source={source}")
+            elif ranked_cards:
                 final_price = ranked_cards[0].get("price")
+                notes.append("final_price_source=ranked_fallback")
 
             if final_price is None:
                 notes.append("Preço não identificado automaticamente.")
