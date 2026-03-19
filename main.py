@@ -126,11 +126,17 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None):
 
     with _scan_lock:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=bool(CONFIG.get("headless", True)))
+            user_data_dir = os.getenv("SKYSCANNER_USER_DATA_DIR", "/tmp/skyscanner-profile")
+            browser = p.chromium.launch_persistent_context(
+                user_data_dir=user_data_dir,
+                headless=bool(CONFIG.get("headless", True)),
+                locale="pt-BR",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
             scraper = GoogleFlightsScraper(browser)
 
             idx = 0
-            total = len(routes) * 3
+            total = len(routes)
             for route in routes:
                 # Google
                 result = scraper.search(route)
@@ -155,55 +161,6 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None):
                 idx += 1
                 if on_row:
                     on_row(idx, total, row)
-
-                # Kayak
-                k = search_kayak(route)
-                min_price, avg_price, _last_price = db.stats_for(route)
-                band = classify_price(k.price, min_price, avg_price)
-                db.save(k, band)
-                row_k = {
-                    "origin": k.origin,
-                    "destination": k.destination,
-                    "outbound_date": k.outbound_date,
-                    "inbound_date": k.inbound_date,
-                    "trip_type": k.trip_type,
-                    "price": k.price,
-                    "price_fmt": format_brl(k.price),
-                    "site": k.site,
-                    "notes": k.notes,
-                    "price_band": band,
-                    "best_vendor": getattr(k, "best_vendor", ""),
-                    "best_vendor_price": getattr(k, "best_vendor_price", None),
-                }
-                parsed.append(row_k)
-                idx += 1
-                if on_row:
-                    on_row(idx, total, row_k)
-
-                # MaxMilhas
-                m = search_maxmilhas(route)
-                min_price, avg_price, _last_price = db.stats_for(route)
-                band = classify_price(m.price, min_price, avg_price)
-                db.save(m, band)
-                row_m = {
-                    "origin": m.origin,
-                    "destination": m.destination,
-                    "outbound_date": m.outbound_date,
-                    "inbound_date": m.inbound_date,
-                    "trip_type": m.trip_type,
-                    "price": m.price,
-                    "price_fmt": format_brl(m.price),
-                    "site": m.site,
-                    "notes": m.notes,
-                    "price_band": band,
-                    "best_vendor": getattr(m, "best_vendor", ""),
-                    "best_vendor_price": getattr(m, "best_vendor_price", None),
-                }
-                parsed.append(row_m)
-                idx += 1
-                if on_row:
-                    on_row(idx, total, row_m)
-
             browser.close()
 
     return parsed
@@ -233,7 +190,7 @@ def _finish_user_run(conn, run_id: int, status: str, summary: str) -> None:
     conn.commit()
 
 
-def run_user_scan(user_id: int, trigger: str = "manual-user"):
+def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = True):
     conn = sqlite3.connect(auth_db_path())
     conn.row_factory = sqlite3.Row
     run_id = _create_user_run(conn, user_id)
@@ -243,7 +200,8 @@ def run_user_scan(user_id: int, trigger: str = "manual-user"):
             routes = build_queries()
         parsed = run_scan_for_routes(routes)
         msg = build_full_scan_message(parsed, trigger=trigger)
-        send_user_telegram_message(user_id, msg)
+        if notify:
+            send_user_telegram_message(user_id, msg)
         total_ok = len([r for r in parsed if r.get("price") is not None])
         summary = f"ok: {total_ok}/{len(parsed)} com preço"
         _finish_user_run(conn, run_id, "ok", summary)
@@ -466,257 +424,6 @@ def skyscanner_url(route: RouteQuery) -> str:
     return f"https://www.skyscanner.com.br/transporte/voos/{o}/{d}/{out}/?adultsv2=1&cabinclass=economy&currency=BRL&locale=pt-BR"
 
 
-def kayak_url(route: RouteQuery) -> str:
-    o = route.origin.upper()
-    d = route.destination.upper()
-    out = route.outbound_date
-    if route.inbound_date:
-        return f"https://www.kayak.com.br/flights/{o}-{d}/{out}/{route.inbound_date}?sort=bestflight_a"
-    return f"https://www.kayak.com.br/flights/{o}-{d}/{out}?sort=bestflight_a"
-
-
-def _extract_price_with_selectors(page, selectors: list[str], timeout_each_ms: int = 4500):
-    """Tenta extrair preço por seletores específicos; fallback no texto completo."""
-    candidates: list[str] = []
-
-    for sel in selectors:
-        try:
-            page.wait_for_selector(sel, timeout=timeout_each_ms)
-            loc = page.locator(sel)
-            count = min(loc.count(), 8)
-            for i in range(count):
-                txt = (loc.nth(i).inner_text(timeout=1200) or "").strip()
-                if txt:
-                    candidates.append(txt)
-        except Exception:
-            continue
-
-    if not candidates:
-        try:
-            candidates.append(page.locator("body").inner_text(timeout=6000))
-        except Exception:
-            pass
-
-    for txt in candidates:
-        p = parse_price_brl(txt)
-        if p is not None:
-            return p
-    return None
-
-
-def search_kayak(route: RouteQuery) -> FlightResult:
-    url = kayak_url(route)
-    timeout_ms = int(CONFIG.get("timeout_ms", 45000))
-    attempts = [
-        {"label": "headless", "headless": True, "persistent": False},
-        {"label": "headed-persistent", "headless": False, "persistent": True},
-    ]
-    errors = []
-
-    for cfg in attempts:
-        try:
-            with sync_playwright() as p:
-                if cfg["persistent"]:
-                    user_data_dir = os.getenv("KAYAK_USER_DATA_DIR", "/tmp/kayak-profile")
-                    context = p.chromium.launch_persistent_context(
-                        user_data_dir=user_data_dir,
-                        headless=cfg["headless"],
-                        locale="pt-BR",
-                    )
-                    page = context.new_page()
-                    close_browser = False
-                else:
-                    browser = p.chromium.launch(headless=cfg["headless"])
-                    context = browser.new_context(
-                        locale="pt-BR",
-                        user_agent=(
-                            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-                        ),
-                    )
-                    page = context.new_page()
-                    close_browser = True
-
-                page.set_default_timeout(timeout_ms)
-                notes = [f"tentativa={cfg['label']}"]
-                page.goto(url, wait_until="domcontentloaded")
-                try:
-                    page.wait_for_load_state("networkidle", timeout=12000)
-                except Exception:
-                    pass
-                time.sleep(random.uniform(8, 12))
-
-                try:
-                    page.mouse.move(150, 220)
-                    page.mouse.wheel(0, 500)
-                    time.sleep(random.uniform(1.0, 2.2))
-                except Exception:
-                    pass
-
-                price = _extract_price_with_selectors(page, [
-                    '[data-testid*="price"]',
-                    '[class*="price"]',
-                    '[aria-label*="R$"]',
-                    'span:has-text("R$")',
-                    'div:has-text("R$")',
-                ])
-                if price is None:
-                    notes.append("Preço não identificado automaticamente no Kayak (seletores+fallback)")
-
-                result = FlightResult(
-                    site="kayak",
-                    origin=route.origin,
-                    destination=route.destination,
-                    outbound_date=route.outbound_date,
-                    inbound_date=route.inbound_date,
-                    trip_type=route.trip_type,
-                    price=price,
-                    currency="BRL",
-                    url=page.url,
-                    notes=" | ".join(notes),
-                )
-
-                context.close()
-                if close_browser:
-                    browser.close()
-
-                if price is not None and "captcha" not in (result.url or "").lower():
-                    return result
-                errors.append(f"{cfg['label']}: bloqueado/sem preço")
-        except Exception as e:
-            errors.append(f"{cfg['label']}: {e}")
-
-    return FlightResult(
-        site="kayak",
-        origin=route.origin,
-        destination=route.destination,
-        outbound_date=route.outbound_date,
-        inbound_date=route.inbound_date,
-        trip_type=route.trip_type,
-        price=None,
-        currency="BRL",
-        url=url,
-        notes="erro Kayak: " + " || ".join(errors),
-    )
-
-
-def is_kayak_blocked(result: FlightResult) -> bool:
-    url = (result.url or "").lower()
-    notes = (result.notes or "").lower()
-    return ("captcha" in url) or ("access denied" in notes) or (result.price is None and "kayak" in result.site)
-
-
-def maxmilhas_url(route: RouteQuery) -> str:
-    # URL genérica de busca por voos no domínio MaxMilhas (pode redirecionar)
-    o = route.origin.upper()
-    d = route.destination.upper()
-    out = route.outbound_date
-    if route.inbound_date:
-        return f"https://www.maxmilhas.com.br/busca-passagens-aereas/{o}/{d}/{out}/{route.inbound_date}"
-    return f"https://www.maxmilhas.com.br/busca-passagens-aereas/{o}/{d}/{out}"
-
-
-def search_maxmilhas(route: RouteQuery) -> FlightResult:
-    url = maxmilhas_url(route)
-    timeout_ms = int(CONFIG.get("timeout_ms", 45000))
-    errors = []
-
-    browser_attempts = [
-        {"label": "headed-persistent", "headless": False, "persistent": True},
-    ]
-
-    for bcfg in browser_attempts:
-        try:
-            with sync_playwright() as p:
-                if bcfg["persistent"]:
-                    user_data_dir = os.getenv("MAXMILHAS_USER_DATA_DIR", "/tmp/maxmilhas-profile")
-                    context = p.chromium.launch_persistent_context(
-                        user_data_dir=user_data_dir,
-                        headless=bcfg["headless"],
-                        locale="pt-BR",
-                    )
-                    page = context.new_page()
-                    close_browser = False
-                else:
-                    browser = p.chromium.launch(headless=bcfg["headless"])
-                    context = browser.new_context(locale="pt-BR")
-                    page = context.new_page()
-                    close_browser = True
-
-                page.set_default_timeout(timeout_ms)
-                notes = [f"modo={bcfg['label']}"]
-
-                for attempt, backoff in [(1, 8), (2, 20), (3, 45)]:
-                    try:
-                        page.goto(url, wait_until="domcontentloaded")
-                        try:
-                            page.wait_for_load_state("networkidle", timeout=12000)
-                        except Exception:
-                            pass
-                        time.sleep(random.uniform(7, 11))
-                        try:
-                            page.mouse.move(180, 250)
-                            page.mouse.wheel(0, 450)
-                            time.sleep(random.uniform(0.8, 2.0))
-                        except Exception:
-                            pass
-
-                        price = _extract_price_with_selectors(page, [
-                            '[data-testid*="price"]',
-                            '[class*="price"]',
-                            'span:has-text("R$")',
-                            'strong:has-text("R$")',
-                            'div:has-text("R$")',
-                        ])
-                        if price is not None:
-                            result = FlightResult(
-                                site="maxmilhas",
-                                origin=route.origin,
-                                destination=route.destination,
-                                outbound_date=route.outbound_date,
-                                inbound_date=route.inbound_date,
-                                trip_type=route.trip_type,
-                                price=price,
-                                currency="BRL",
-                                url=page.url,
-                                notes=f"modo={bcfg['label']} | tentativa={attempt}",
-                            )
-                            context.close()
-                            if close_browser:
-                                browser.close()
-                            return result
-                        notes.append(f"tentativa {attempt}: sem tarifa extraível")
-                    except Exception as e:
-                        notes.append(f"tentativa {attempt}: erro {e}")
-                    if attempt < 3:
-                        time.sleep(backoff)
-
-                context.close()
-                if close_browser:
-                    browser.close()
-                errors.append(" | ".join(notes))
-        except Exception as e:
-            errors.append(f"modo {bcfg['label']}: {e}")
-
-    return FlightResult(
-        site="maxmilhas",
-        origin=route.origin,
-        destination=route.destination,
-        outbound_date=route.outbound_date,
-        inbound_date=route.inbound_date,
-        trip_type=route.trip_type,
-        price=None,
-        currency="BRL",
-        url=url,
-        notes=" | ".join(errors) if errors else "sem tarifa extraível",
-    )
-
-
-def is_maxmilhas_blocked(result: FlightResult) -> bool:
-    txt = ((result.notes or "") + " " + (result.url or "")).lower()
-    return ("captcha" in txt) or ("bloque" in txt) or (result.price is None and "maxmilhas" in result.site)
-
-
 def search_skyscanner(route: RouteQuery) -> FlightResult:
     """Tentativa agressiva-controlada para Skyscanner.
 
@@ -853,26 +560,6 @@ def consulta():
                 fallback = scraper.search(route)
                 browser.close()
             fallback.notes = (fallback.notes + " | " if fallback.notes else "") + "fallback: skyscanner bloqueado por captcha"
-            result = fallback
-    elif fonte == "kayak":
-        result = search_kayak(route)
-        if is_kayak_blocked(result):
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=bool(CONFIG.get("headless", True)))
-                scraper = GoogleFlightsScraper(browser)
-                fallback = scraper.search(route)
-                browser.close()
-            fallback.notes = (fallback.notes + " | " if fallback.notes else "") + "fallback: kayak bloqueado/sem preço"
-            result = fallback
-    elif fonte == "maxmilhas":
-        result = search_maxmilhas(route)
-        if is_maxmilhas_blocked(result):
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=bool(CONFIG.get("headless", True)))
-                scraper = GoogleFlightsScraper(browser)
-                fallback = scraper.search(route)
-                browser.close()
-            fallback.notes = (fallback.notes + " | " if fallback.notes else "") + "fallback: maxmilhas sem tarifa"
             result = fallback
     else:
         with sync_playwright() as p:
@@ -1308,6 +995,8 @@ def painel():
     tg = db.execute("SELECT bot_token, chat_id FROM user_telegram WHERE user_id = ?", (user["id"],)).fetchone()
     cron = db.execute("SELECT enabled, every_hours FROM user_cron WHERE user_id = ?", (user["id"],)).fetchone()
     last_run = db.execute("SELECT started_at, finished_at, status, summary FROM user_runs WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user["id"],)).fetchone()
+    default_tg_bot = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    default_tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
 
     return render_template_string(
         """
@@ -1363,7 +1052,7 @@ def painel():
                   <div class='col-md-4'><div class='card kpi'><div class='card-body'><div class='text-muted'>Última execução</div><div class='small mb-0'>{% if last_run %}{{last_run['status']}}{% else %}sem execução{% endif %}</div></div></div></div>
                 </div>
 
-                <div class='card mb-3 shadow-sm' id='rotas'>
+                <div class='card mb-3 shadow-sm dashboard-section' id='rotas'>
                   <div class='card-header'><i class='bi bi-signpost-split me-2'></i>Rotas configuradas</div>
                   <div class='card-body'>
                     <form method='post' action='{{ url_for("add_route") }}' class='row g-2 mb-3'>
@@ -1373,31 +1062,51 @@ def painel():
                       <div class='col-md-3'><input class='form-control' name='inbound_date' type='date'></div>
                       <div class='col-md-2 d-grid'><button class='btn btn-primary' type='submit'>Adicionar</button></div>
                     </form>
-                    <ul class='list-group'>
-                      {% for r in routes %}
-                        <li class='list-group-item d-flex justify-content-between align-items-center'>
-                          <span>{{r['origin']}} → {{r['destination']}} | {{r['outbound_date']}} {% if r['inbound_date'] %}/ {{r['inbound_date']}}{% endif %}</span>
-                          <a class='btn btn-sm btn-outline-danger' href='{{ url_for("delete_route", route_id=r["id"]) }}'>Excluir</a>
-                        </li>
-                      {% else %}
-                        <li class='list-group-item'>Nenhuma rota cadastrada.</li>
-                      {% endfor %}
-                    </ul>
+                    <div class='table-responsive border rounded'>
+                      <table class='table table-hover table-striped mb-0 align-middle'>
+                        <thead class='table-light'>
+                          <tr>
+                            <th>Origem</th>
+                            <th>Destino</th>
+                            <th>Data de Ida</th>
+                            <th>Data de Volta</th>
+                            <th class='text-end'>Ações</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {% for r in routes %}
+                            <tr>
+                              <td><span class='badge bg-primary fs-6'>{{r['origin']}}</span></td>
+                              <td><span class='badge bg-secondary fs-6'>{{r['destination']}}</span></td>
+                              <td>{{r['outbound_date']}}</td>
+                              <td>{{r['inbound_date'] if r['inbound_date'] else '-'}}</td>
+                              <td class='text-end'>
+                                <a class='btn btn-sm btn-outline-danger' href='{{ url_for("delete_route", route_id=r["id"]) }}'>
+                                  <i class='bi bi-trash'></i> Excluir
+                                </a>
+                              </td>
+                            </tr>
+                          {% else %}
+                            <tr><td colspan='5' class='text-center text-muted py-3'>Nenhuma rota cadastrada.</td></tr>
+                          {% endfor %}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
 
-                <div class='card mb-3 shadow-sm' id='telegram'>
+                <div class='card mb-3 shadow-sm dashboard-section d-none' id='telegram'>
                   <div class='card-header'><i class='bi bi-telegram me-2'></i>Telegram do usuário</div>
                   <div class='card-body'>
                     <form method='post' action='{{ url_for("save_telegram") }}' class='row g-2'>
-                      <div class='col-md-6'><input class='form-control' name='bot_token' placeholder='Bot token' value='{{ tg["bot_token"] if tg else "" }}'></div>
-                      <div class='col-md-4'><input class='form-control' name='chat_id' placeholder='Chat ID' value='{{ tg["chat_id"] if tg else "" }}'></div>
+                      <div class='col-md-6'><input class='form-control' name='bot_token' placeholder='Bot token' value='{{ tg["bot_token"] if tg and tg["bot_token"] else default_tg_bot }}'></div>
+                      <div class='col-md-4'><input class='form-control' name='chat_id' placeholder='Chat ID' value='{{ tg["chat_id"] if tg and tg["chat_id"] else default_tg_chat }}'></div>
                       <div class='col-md-2 d-grid'><button class='btn btn-success' type='submit'>Salvar</button></div>
                     </form>
                   </div>
                 </div>
 
-                <div class='card shadow-sm' id='cron'>
+                <div class='card shadow-sm dashboard-section d-none' id='cron'>
                   <div class='card-header'><i class='bi bi-clock-history me-2'></i>Cron do usuário</div>
                   <div class='card-body'>
                     <form method='post' action='{{ url_for("save_cron") }}' class='row g-2 align-items-center'>
@@ -1427,6 +1136,30 @@ def painel():
             </div>
           </div>
         <script>
+          function showSection(hash) {
+            document.querySelectorAll('.dashboard-section').forEach(el => el.classList.add('d-none'));
+            var target = document.getElementById(hash);
+            if (target) {
+              target.classList.remove('d-none');
+              localStorage.setItem('adminActiveTab', hash);
+            } else {
+              document.getElementById('rotas').classList.remove('d-none');
+              localStorage.setItem('adminActiveTab', 'rotas');
+            }
+            document.querySelectorAll('.sidebar a').forEach(el => el.classList.remove('fw-bold', 'text-white'));
+            var activeLink = document.querySelector('.sidebar a[href="#' + hash + '"]');
+            if (activeLink) activeLink.classList.add('fw-bold', 'text-white');
+          }
+          window.addEventListener('hashchange', () => {
+            let hash = window.location.hash.substring(1);
+            if(hash) {
+              showSection(hash);
+            }
+          });
+          window.addEventListener('load', () => {
+            let hash = window.location.hash.substring(1) || localStorage.getItem('adminActiveTab') || 'rotas';
+            showSection(hash);
+          });
           function toggleTheme() {
             document.body.classList.toggle('dark-mode');
             localStorage.setItem('adminThemeDark', document.body.classList.contains('dark-mode') ? '1' : '0');
@@ -1448,6 +1181,8 @@ def painel():
         tg=tg,
         cron=cron,
         last_run=last_run,
+        default_tg_bot=default_tg_bot,
+        default_tg_chat=default_tg_chat,
     )
 
 
