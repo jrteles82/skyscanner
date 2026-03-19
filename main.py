@@ -156,6 +156,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None):
                     "price_band": band,
                     "best_vendor": getattr(result, "best_vendor", ""),
                     "best_vendor_price": getattr(result, "best_vendor_price", None),
+                    "final_price_source": extract_final_price_source(result.notes),
                 }
                 parsed.append(row)
                 idx += 1
@@ -362,6 +363,14 @@ def send_user_telegram_message(user_id: int, text: str) -> None:
         requests.post(url, data={"chat_id": chat_id, "text": text}, timeout=20).raise_for_status()
     finally:
         conn.close()
+
+
+def extract_final_price_source(notes: str | None) -> str:
+    txt = (notes or "")
+    m = re.search(r"final_price_source=([^|]+)", txt)
+    if not m:
+        return ""
+    return (m.group(1) or "").strip()
 
 
 
@@ -633,6 +642,7 @@ def consulta():
                 "notes": result.notes,
                 "best_vendor": getattr(result, "best_vendor", ""),
                 "best_vendor_price": getattr(result, "best_vendor_price", None),
+                "final_price_source": extract_final_price_source(result.notes),
             },
             "historico": {
                 "min_price": min_price,
@@ -686,6 +696,8 @@ def historico():
     ).fetchall()
 
     items = [dict(r) for r in rows]
+    for item in items:
+        item["final_price_source"] = extract_final_price_source(item.get("notes"))
     return jsonify({"total": len(items), "items": items})
 
 
@@ -734,6 +746,7 @@ def cron_stream():
                         "price_band": band,
                         "best_vendor": getattr(result, "best_vendor", ""),
                         "best_vendor_price": getattr(result, "best_vendor_price", None),
+                        "final_price_source": extract_final_price_source(result.notes),
                     }
                     parsed.append(row)
                     payload = {"type": "row", "index": idx, "total": total, "item": row}
