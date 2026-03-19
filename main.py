@@ -173,10 +173,10 @@ def run_full_scan(on_row=None):
     return parsed
 
 
-def _create_user_run(conn, user_id: int) -> int:
+def _create_user_run(conn, user_id: int, trigger: str = "manual-user") -> int:
     cur = conn.execute(
-        "INSERT INTO user_runs (user_id, started_at, status, summary) VALUES (?, ?, ?, ?)",
-        (user_id, datetime.now().isoformat(), "running", ""),
+        "INSERT INTO user_runs (user_id, started_at, status, summary, trigger) VALUES (?, ?, ?, ?, ?)",
+        (user_id, datetime.now().isoformat(), "running", "", trigger),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -190,10 +190,18 @@ def _finish_user_run(conn, run_id: int, status: str, summary: str) -> None:
     conn.commit()
 
 
+def _touch_user_cron_run(conn, user_id: int) -> None:
+    conn.execute(
+        "UPDATE user_cron SET last_run_at = ?, updated_at = COALESCE(updated_at, ?) WHERE user_id = ?",
+        (datetime.now().isoformat(), datetime.now().isoformat(), user_id),
+    )
+    conn.commit()
+
+
 def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = True):
     conn = sqlite3.connect(auth_db_path())
     conn.row_factory = sqlite3.Row
-    run_id = _create_user_run(conn, user_id)
+    run_id = _create_user_run(conn, user_id, trigger=trigger)
     try:
         routes = _build_user_routes(conn, user_id)
         if not routes:
@@ -205,6 +213,8 @@ def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = Tru
         total_ok = len([r for r in parsed if r.get("price") is not None])
         summary = f"ok: {total_ok}/{len(parsed)} com preço"
         _finish_user_run(conn, run_id, "ok", summary)
+        if trigger.startswith("agendada"):
+            _touch_user_cron_run(conn, user_id)
         return {"status": "ok", "summary": summary, "parsed": parsed}
     except Exception as e:
         _finish_user_run(conn, run_id, "error", str(e)[:500])
@@ -243,13 +253,24 @@ def start_auto_scan_if_needed():
 
 def _should_run_user_now(conn, user_id: int, every_hours: int) -> bool:
     row = conn.execute(
-        "SELECT started_at FROM user_runs WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+        "SELECT last_run_at, updated_at FROM user_cron WHERE user_id = ?",
         (user_id,),
     ).fetchone()
-    if not row or not row["started_at"]:
+    if row and row["last_run_at"]:
+        try:
+            last_started = datetime.fromisoformat(row["last_run_at"])
+            return (datetime.now() - last_started).total_seconds() >= (every_hours * 3600)
+        except Exception:
+            pass
+
+    fallback = conn.execute(
+        "SELECT started_at FROM user_runs WHERE user_id = ? AND trigger LIKE 'agendada%' ORDER BY id DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    if not fallback or not fallback["started_at"]:
         return True
     try:
-        last_started = datetime.fromisoformat(row["started_at"])
+        last_started = datetime.fromisoformat(fallback["started_at"])
     except Exception:
         return True
     return (datetime.now() - last_started).total_seconds() >= (every_hours * 3600)
@@ -825,6 +846,7 @@ def init_auth_tables():
             enabled INTEGER DEFAULT 1,
             every_hours INTEGER DEFAULT 3,
             updated_at TEXT NOT NULL,
+            last_run_at TEXT,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
         """
@@ -838,10 +860,20 @@ def init_auth_tables():
             finished_at TEXT,
             status TEXT NOT NULL,
             summary TEXT,
+            trigger TEXT DEFAULT 'manual-user',
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
         """
     )
+    for ddl in [
+        "ALTER TABLE user_cron ADD COLUMN last_run_at TEXT",
+        "ALTER TABLE user_runs ADD COLUMN trigger TEXT DEFAULT 'manual-user'",
+    ]:
+        try:
+            cur.execute(ddl)
+        except sqlite3.OperationalError:
+            pass
+
     db.commit()
     db.close()
 
@@ -1031,9 +1063,9 @@ def painel():
               <aside class='col-md-3 col-lg-2 p-0 sidebar'>
                 <div class='brand'><i class='bi bi-activity'></i> Skyscanner Admin</div>
                 <a href='#rotas'><i class='bi bi-signpost-split me-2'></i>Rotas</a>
+                <a href='#consultas'><i class='bi bi-window me-2'></i>Consultas</a>
                 <a href='#telegram'><i class='bi bi-telegram me-2'></i>Telegram</a>
                 <a href='#cron'><i class='bi bi-clock-history me-2'></i>Cron</a>
-                <a href='{{ url_for("app_page") }}'><i class='bi bi-window me-2'></i>App Consultas</a>
                 <a href='{{ url_for("auth_logout") }}'><i class='bi bi-box-arrow-right me-2'></i>Sair</a>
               </aside>
               <main class='col-md-9 col-lg-10 p-0'>
@@ -1062,6 +1094,7 @@ def painel():
                       <div class='col-md-3'><input class='form-control' name='inbound_date' type='date'></div>
                       <div class='col-md-2 d-grid'><button class='btn btn-primary' type='submit'>Adicionar</button></div>
                     </form>
+                    <div class='small text-muted mb-3'>As datas padrão globais de ida foram reduzidas para 04 e 05 de junho.</div>
                     <div class='table-responsive border rounded'>
                       <table class='table table-hover table-striped mb-0 align-middle'>
                         <thead class='table-light'>
@@ -1076,15 +1109,18 @@ def painel():
                         <tbody>
                           {% for r in routes %}
                             <tr>
-                              <td><span class='badge bg-primary fs-6'>{{r['origin']}}</span></td>
-                              <td><span class='badge bg-secondary fs-6'>{{r['destination']}}</span></td>
-                              <td>{{r['outbound_date']}}</td>
-                              <td>{{r['inbound_date'] if r['inbound_date'] else '-'}}</td>
-                              <td class='text-end'>
-                                <a class='btn btn-sm btn-outline-danger' href='{{ url_for("delete_route", route_id=r["id"]) }}'>
-                                  <i class='bi bi-trash'></i> Excluir
-                                </a>
-                              </td>
+                              <form method='post' action='{{ url_for("update_route", route_id=r["id"]) }}'>
+                                <td><input class='form-control form-control-sm' name='origin' value='{{r["origin"]}}' required></td>
+                                <td><input class='form-control form-control-sm' name='destination' value='{{r["destination"]}}' required></td>
+                                <td><input class='form-control form-control-sm' name='outbound_date' type='date' value='{{r["outbound_date"]}}' required></td>
+                                <td><input class='form-control form-control-sm' name='inbound_date' type='date' value='{{r["inbound_date"] if r["inbound_date"] else ""}}'></td>
+                                <td class='text-end text-nowrap'>
+                                  <button class='btn btn-sm btn-outline-primary' type='submit'><i class='bi bi-save'></i> Salvar</button>
+                                  <a class='btn btn-sm btn-outline-danger' href='{{ url_for("delete_route", route_id=r["id"]) }}'>
+                                    <i class='bi bi-trash'></i> Excluir
+                                  </a>
+                                </td>
+                              </form>
                             </tr>
                           {% else %}
                             <tr><td colspan='5' class='text-center text-muted py-3'>Nenhuma rota cadastrada.</td></tr>
@@ -1092,6 +1128,13 @@ def painel():
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                </div>
+
+                <div class='card mb-3 shadow-sm dashboard-section d-none' id='consultas'>
+                  <div class='card-header'><i class='bi bi-window me-2'></i>App Consultas</div>
+                  <div class='card-body p-0'>
+                    <iframe src='{{ url_for("app_front") }}' style='width:100%;height:78vh;border:0;'></iframe>
                   </div>
                 </div>
 
@@ -1215,6 +1258,29 @@ def delete_route(route_id: int):
     db.commit()
     return redirect(url_for("painel"))
 
+@app.route("/painel/route/update/<int:route_id>", methods=["POST"])
+@login_required
+def update_route(route_id: int):
+    db = get_auth_db()
+    user = current_user()
+    db.execute(
+        """
+        UPDATE user_routes
+        SET origin = ?, destination = ?, outbound_date = ?, inbound_date = ?
+        WHERE id = ? AND user_id = ?
+        """,
+        (
+            request.form.get("origin", "").strip().upper(),
+            request.form.get("destination", "").strip().upper(),
+            request.form.get("outbound_date", "").strip(),
+            request.form.get("inbound_date", "").strip(),
+            route_id,
+            user["id"],
+        ),
+    )
+    db.commit()
+    return redirect(url_for("painel", _anchor="rotas"))
+
 
 @app.route("/painel/telegram", methods=["POST"])
 @login_required
@@ -1246,7 +1312,7 @@ def save_telegram():
 def run_now_user():
     user = current_user()
     run_user_scan(int(user["id"]), trigger="painel-manual", notify=True)
-    return redirect(url_for("painel"))
+    return redirect(url_for("painel", _anchor="cron"))
 
 
 @app.route("/painel/cron", methods=["POST"])
@@ -1268,7 +1334,7 @@ def save_cron():
         (user["id"], enabled, every_hours, datetime.now().isoformat()),
     )
     db.commit()
-    return redirect(url_for("painel"))
+    return redirect(url_for("painel", _anchor="cron"))
 
 
 if __name__ == "__main__":

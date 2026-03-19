@@ -67,7 +67,7 @@ CONFIG = {
     "origin": "PVH",
     "destinations_br": ["JPA", "REC", "NAT"], "destinations_sa": [],
     "enable_south_america": False,
-    "outbound_dates": ["2026-06-04", "2026-06-05", "2026-06-06"],
+    "outbound_dates": ["2026-06-04", "2026-06-05"],
     "inbound_dates": ["2026-06-15", "2026-06-16"],
     "check_every_hours": 3,
     "headless": True,
