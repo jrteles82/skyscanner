@@ -341,6 +341,17 @@ class GoogleFlightsScraper:
             except Exception:
                 pass
 
+    def _wait_briefly_for_results(self, page) -> None:
+        try:
+            page.wait_for_load_state("networkidle", timeout=12000)
+        except Exception:
+            pass
+        try:
+            page.locator("text=Menores preços").first.wait_for(timeout=5000)
+        except Exception:
+            pass
+        time.sleep(CONFIG["settle_seconds"])
+
     def _extract_summary_price(self, page) -> float | None:
         patterns = [
             r"Menores preços\s+a partir de\s+R\$\s*([\d\.]+(?:,\d{2})?)",
@@ -349,7 +360,8 @@ class GoogleFlightsScraper:
         for sel in ["body", "main", "[role='main']"]:
             try:
                 txt = page.locator(sel).first.inner_text(timeout=3000)
-                if not txt: continue
+                if not txt:
+                    continue
                 for pattern in patterns:
                     m = re.search(pattern, txt, flags=re.IGNORECASE | re.DOTALL)
                     if m:
@@ -372,133 +384,258 @@ class GoogleFlightsScraper:
                 loc = factory()
                 if loc.count() > 0:
                     loc.first.click(timeout=4000)
-                    time.sleep(2.5)
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=8000)
-                    except Exception:
-                        pass
-                    time.sleep(2.0)
+                    self._wait_briefly_for_results(page)
                     return True
             except Exception:
                 pass
         return False
 
+    def _is_probable_flight_card(self, text: str) -> bool:
+        low = text.lower()
+        if not text or "R$" not in text:
+            return False
+        if any(x in low for x in ["menores preços", "histórico", "gráfico", "monitorar", "explorar"]):
+            return False
+        return any(x in low for x in ["parada", "escalas", "co2", "emissões", "voo", "aeroporto"])
+
     def _extract_visible_flight_cards(self, page) -> list[dict]:
         cards = []
         selectors = ["[role='listitem']", "li", "div[jscontroller]", "div[role='button']"]
-        
+
         for sel in selectors:
             try:
                 loc = page.locator(sel)
-                count = min(loc.count(), 120)
+                count = min(loc.count(), 140)
                 for i in range(count):
                     card = loc.nth(i)
                     try:
                         txt = card.inner_text(timeout=1200).strip()
                     except Exception:
                         continue
-                    
-                    if not txt or "R$" not in txt: continue
-                    low = txt.lower()
-                    if any(x in low for x in ["menores preços", "histórico", "gráfico", "monitorar"]):
+
+                    if not self._is_probable_flight_card(txt):
                         continue
-                    
-                    has_shape = any(x in low for x in ["parada", "escalas", "co2", "emissões"])
-                    if not has_shape: continue
-                    
+
                     nums = re.findall(r"R\$\s*([\d\.]+(?:,\d{2})?)", txt)
-                    if not nums: continue
-                    try:
-                        price = float(nums[-1].replace('.', '').replace(',', '.'))
-                        cards.append({"selector": sel, "index": i, "price": price, "loc": card})
-                    except Exception:
-                        pass
+                    if not nums:
+                        continue
+                    parsed_prices = []
+                    for raw in nums:
+                        try:
+                            parsed_prices.append(float(raw.replace('.', '').replace(',', '.')))
+                        except Exception:
+                            pass
+                    if not parsed_prices:
+                        continue
+
+                    cards.append({
+                        "selector": sel,
+                        "index": i,
+                        "price": min(parsed_prices),
+                        "prices": parsed_prices,
+                        "text": txt[:400],
+                        "loc": card,
+                    })
             except Exception:
                 pass
-            if cards: break
+            if cards:
+                break
         return cards
 
-    def _open_card_and_extract_vendor(self, page, card) -> tuple[str, float | None, list[dict]]:
+    def _sort_candidate_cards(self, cards: list[dict], summary_price: float | None) -> list[dict]:
+        def _score(item: dict):
+            price = item.get("price")
+            if price is None:
+                return (10**12, 10**12)
+            if summary_price is None:
+                return (0, price)
+            return (abs(price - summary_price), price)
+
+        return sorted(cards, key=_score)
+
+    def _try_click(self, target) -> bool:
+        strategies = [
+            lambda: target.click(timeout=3500),
+            lambda: target.click(timeout=3500, force=True),
+        ]
+        for fn in strategies:
+            try:
+                fn()
+                return True
+            except Exception:
+                pass
+        return False
+
+    def _wait_for_booking_page(self, page) -> bool:
+        if "/travel/flights/booking" in (page.url or ""):
+            return True
+        try:
+            page.wait_for_url(re.compile(r".*/travel/flights/booking.*"), timeout=12000)
+            return True
+        except Exception:
+            return "/travel/flights/booking" in (page.url or "")
+
+    def _open_booking_from_card(self, page, card) -> bool:
+        try:
+            card.scroll_into_view_if_needed(timeout=2000)
+        except Exception:
+            pass
+
+        card_clicked = False
         try:
             card.click(timeout=4000)
-            time.sleep(2.5)
+            card_clicked = True
+            time.sleep(1.5)
         except Exception:
             pass
-            
-        try:
-            btns = card.locator("button")
-            if btns.count() > 0:
-                btns.last.click(timeout=3000)
-                time.sleep(2.0)
-        except Exception:
-            pass
-            
-        action_labels = ["Selecionar voo", "Ver voos", "Selecionar", "Reservar", "Opções de reserva"]
-        for label in action_labels:
-            try:
-                loc = page.get_by_role("button", name=label)
-                if loc.count() > 0:
-                    loc.first.click(timeout=3000)
-                    time.sleep(2.5)
-                    break
-            except Exception:
-                pass
-            try:
-                loc = page.get_by_role("link", name=label)
-                if loc.count() > 0:
-                    loc.first.click(timeout=3000)
-                    time.sleep(2.5)
-                    break
-            except Exception:
-                pass
 
-        try:
-            body = page.locator("body").inner_text(timeout=7000)
-        except Exception:
-            return "", None, []
+        if self._wait_for_booking_page(page):
+            return True
 
-        options = []
-        patterns = [
-            r"Reserve com a\s+([^\n\r]+?)\s+R\$\s*([\d\.]+(?:,\d{2})?)",
-            r"Reservar com\s+([^\n\r]+?)\s+R\$\s*([\d\.]+(?:,\d{2})?)",
+        action_labels = [
+            "Selecionar voo", "Ver voos", "Selecionar", "Reservar", "Opções de reserva",
+            "Continuar", "Ver opção", "Escolher"
         ]
-        for pattern in patterns:
-            for vendor, raw_price in re.findall(pattern, body, flags=re.IGNORECASE):
-                vendor = (vendor or "").strip()
-                try:
-                    price = float(raw_price.replace(".", "").replace(",", "."))
-                except Exception:
-                    continue
-                if vendor:
-                    options.append({"vendor": vendor, "price": price})
-        
-        cleaned = []
+
+        targets = [card, page]
+        for target in targets:
+            for label in action_labels:
+                for role in ["button", "link"]:
+                    try:
+                        loc = target.get_by_role(role, name=re.compile(label, re.I))
+                        if loc.count() > 0 and self._try_click(loc.first):
+                            time.sleep(1.8)
+                            if self._wait_for_booking_page(page):
+                                return True
+                    except Exception:
+                        pass
+
+        if card_clicked:
+            try:
+                card.dblclick(timeout=2500)
+                time.sleep(1.5)
+            except Exception:
+                pass
+
+        return self._wait_for_booking_page(page)
+
+    def _collect_booking_text_blocks(self, page) -> list[str]:
+        blocks = []
+        selectors = [
+            "[role='main'] [role='listitem']",
+            "[role='main'] li",
+            "[role='main'] div",
+        ]
+        for sel in selectors:
+            try:
+                loc = page.locator(sel)
+                count = min(loc.count(), 180)
+                for i in range(count):
+                    try:
+                        txt = loc.nth(i).inner_text(timeout=800).strip()
+                    except Exception:
+                        continue
+                    if txt and "R$" in txt:
+                        blocks.append(txt)
+                if blocks:
+                    break
+            except Exception:
+                pass
+        if not blocks:
+            try:
+                body = page.locator("body").inner_text(timeout=5000)
+                if body:
+                    blocks = [body]
+            except Exception:
+                pass
+        return blocks
+
+    def _extract_vendor_options_from_text(self, text: str) -> list[dict]:
+        options = []
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        known_vendors = [
+            "maxmilhas", "zupper", "decolar", "booking", "gol", "latam", "azul",
+            "123 milhas", "123milhas", "viajanet", "voeazul", "smiles", "kayak",
+            "mytrip", "trip.com", "edreams", "kiwi", "cvc", "submarino viagens",
+        ]
+
+        for idx, line in enumerate(lines):
+            low = line.lower()
+            prices = re.findall(r"R\$\s*([\d\.]+(?:,\d{2})?)", line)
+            if not prices:
+                continue
+            try:
+                price = float(prices[-1].replace('.', '').replace(',', '.'))
+            except Exception:
+                continue
+
+            vendor = ""
+            context = " ".join(lines[max(0, idx - 1): min(len(lines), idx + 2)])
+            for name in known_vendors:
+                if name in context.lower():
+                    vendor = name
+                    break
+
+            if not vendor:
+                m = re.search(r"(?:Reserve com a|Reservar com|Comprar com|Emitido por|Vendido por)\s+([^\n\r]+)", context, re.I)
+                if m:
+                    vendor = m.group(1).strip(" :-")
+
+            if vendor:
+                options.append({"vendor": vendor.strip(), "price": price})
+
+        dedup = []
         seen = set()
         for item in options:
             key = (item["vendor"].lower(), item["price"])
             if key not in seen:
                 seen.add(key)
-                cleaned.append(item)
-                
+                dedup.append(item)
+        return dedup
+
+    def _extract_booking_options(self, page) -> tuple[str, float | None, list[dict]]:
+        blocks = self._collect_booking_text_blocks(page)
+        options = []
+        for block in blocks:
+            options.extend(self._extract_vendor_options_from_text(block))
+
+        if not options:
+            try:
+                body = page.locator("body").inner_text(timeout=7000)
+            except Exception:
+                return "", None, []
+            for pattern in [
+                r"Reserve com a\s+([^\n\r]+?)\s+R\$\s*([\d\.]+(?:,\d{2})?)",
+                r"Reservar com\s+([^\n\r]+?)\s+R\$\s*([\d\.]+(?:,\d{2})?)",
+                r"Vendido por\s+([^\n\r]+?)\s+R\$\s*([\d\.]+(?:,\d{2})?)",
+            ]:
+                for vendor, raw_price in re.findall(pattern, body, flags=re.IGNORECASE):
+                    try:
+                        price = float(raw_price.replace(".", "").replace(",", "."))
+                    except Exception:
+                        continue
+                    options.append({"vendor": vendor.strip(), "price": price})
+
+        cleaned = []
+        seen = set()
+        for item in options:
+            vendor = (item.get("vendor") or "").strip()
+            price = item.get("price")
+            if not vendor or price is None:
+                continue
+            key = (vendor.lower(), price)
+            if key not in seen:
+                seen.add(key)
+                cleaned.append({"vendor": vendor, "price": price})
+
         if not cleaned:
             return "", None, []
-            
         best = sorted(cleaned, key=lambda x: x["price"])[0]
         return best["vendor"], best["price"], cleaned
 
-    def _open_best_flight_details_if_possible(self, page) -> None:
-        for role, label in [("button", "Selecionar voo"), ("button", "Ver voos"), ("link", "Selecionar voo"), ("link", "Ver voos")]:
-            try:
-                locator = page.get_by_role(role, name=label)
-                if locator.count() > 0:
-                    locator.first.click(timeout=2500)
-                    time.sleep(2)
-                    return
-            except Exception:
-                pass
-
     def search(self, route: RouteQuery) -> FlightResult:
         context = getattr(self.browser, "new_context", None)
+        ctx = None
         if callable(context):
             ctx = self.browser.new_context(
                 locale="pt-BR",
@@ -506,7 +643,6 @@ class GoogleFlightsScraper:
             )
             page = ctx.new_page()
         else:
-            # It's a persistent context, so we just create a new page
             page = self.browser.new_page()
         page.set_default_timeout(int(CONFIG["timeout_ms"]))
         url = build_google_flights_url(route)
@@ -514,56 +650,58 @@ class GoogleFlightsScraper:
         try:
             page.goto(url, wait_until="domcontentloaded")
             self._accept_cookies_if_present(page)
-            try:
-                page.wait_for_load_state("networkidle", timeout=12000)
-            except Exception:
-                pass
-            time.sleep(CONFIG["settle_seconds"])
+            self._wait_briefly_for_results(page)
 
             summary_price = self._extract_summary_price(page)
-            if summary_price is not None:
-                notes.append(f"summary_price={format_brl(summary_price)}")
-            else:
-                notes.append("summary_price=N/D")
+            notes.append(f"summary_price={format_brl(summary_price)}" if summary_price is not None else "summary_price=N/D")
 
             clicked_lowest = self._click_lowest_prices_tab(page)
             notes.append(f"clicou_menores_precos={'sim' if clicked_lowest else 'nao'}")
+
+            cards = self._extract_visible_flight_cards(page)
+            notes.append(f"cards_encontrados={len(cards)}")
 
             best_vendor = ""
             best_vendor_price = None
             booking_options = []
             final_price = None
+            booking_opened = False
 
-            cards = self._extract_visible_flight_cards(page)
-            if summary_price is not None and cards:
-                # Find matching price
-                for item in cards:
-                    if abs(item["price"] - summary_price) < 0.01:
-                        final_price = item["price"]
-                        notes.append(f"card_preco_encontrado={format_brl(final_price)}")
-                        best_vendor, best_vendor_price, booking_options = self._open_card_and_extract_vendor(page, item["loc"])
+            ranked_cards = self._sort_candidate_cards(cards, summary_price)
+            max_attempts = min(len(ranked_cards), 4)
+            for idx, item in enumerate(ranked_cards[:max_attempts], start=1):
+                price = item.get("price")
+                notes.append(f"tentativa_card_{idx}={format_brl(price)}")
+                if self._open_booking_from_card(page, item["loc"]):
+                    booking_opened = True
+                    notes.append(f"booking_aberto_no_card={idx}")
+                    best_vendor, best_vendor_price, booking_options = self._extract_booking_options(page)
+                    if best_vendor:
+                        final_price = best_vendor_price if best_vendor_price is not None else price
                         break
-            
-            if final_price is None and cards:
-                cheapest = sorted(cards, key=lambda x: x["price"])[0]
-                final_price = cheapest["price"]
-                notes.append(f"fallback_list_min_price={format_brl(final_price)}")
-                best_vendor, best_vendor_price, booking_options = self._open_card_and_extract_vendor(page, cheapest["loc"])
+                    notes.append(f"booking_sem_vendor_no_card={idx}")
+                    try:
+                        page.go_back(wait_until="domcontentloaded")
+                        self._wait_briefly_for_results(page)
+                    except Exception:
+                        break
+                else:
+                    notes.append(f"falha_abrir_booking_card={idx}")
+
+            if not booking_opened and ranked_cards:
+                fallback = ranked_cards[0]
+                final_price = fallback.get("price")
+                notes.append(f"fallback_primeira_lista={format_brl(final_price)}")
 
             if best_vendor:
                 notes.append(f"melhor_vendedor={best_vendor} ({format_brl(best_vendor_price)})")
+                notes.append(f"opcoes_reserva={len(booking_options)}")
 
-            if not best_vendor:
-                self._open_best_flight_details_if_possible(page)
-                v2, p2, options2 = self._open_card_and_extract_vendor(page, page.locator("body"))
-                if v2:
-                    best_vendor = v2
-                    best_vendor_price = p2
-                    booking_options = options2
-                    notes.append(f"fallback_global_melhor_vendedor={best_vendor} ({format_brl(best_vendor_price)})")
-
-            if best_vendor_price is not None and final_price is None:
+            if final_price is None and best_vendor_price is not None:
                 final_price = best_vendor_price
+
+            if final_price is None and ranked_cards:
+                final_price = ranked_cards[0].get("price")
 
             if final_price is None:
                 notes.append("Preço não identificado automaticamente.")
@@ -597,7 +735,15 @@ class GoogleFlightsScraper:
                 notes="timeout na página",
             )
         finally:
-            page.close()
+            try:
+                page.close()
+            except Exception:
+                pass
+            if ctx is not None:
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
 
 class Monitor:
     def __init__(self) -> None:
