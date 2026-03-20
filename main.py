@@ -819,6 +819,56 @@ def get_auth_db():
     return g.auth_db
 
 
+
+
+def _current_iso_ts() -> str:
+    return datetime.now().isoformat()
+
+
+def _ensure_user_routes_defaults(conn, user_id: int) -> None:
+    exists = conn.execute("SELECT 1 FROM user_routes WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()
+    if exists:
+        return
+    now = _current_iso_ts()
+    for route in build_queries():
+        conn.execute("INSERT INTO user_routes (user_id, origin, destination, outbound_date, inbound_date, active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
+            (user_id, route.origin, route.destination, route.outbound_date, route.inbound_date or "", now),
+        )
+    conn.commit()
+
+
+def _ensure_user_telegram_defaults(conn, user_id: int) -> None:
+    exists = conn.execute("SELECT 1 FROM user_telegram WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()
+    if exists:
+        return
+    token = os.getenv("TELEGRAM_BOT_TOKEN") or CONFIG.get("telegram_bot_token")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID") or CONFIG.get("telegram_chat_id")
+    if not token and not chat_id:
+        return
+    conn.execute("INSERT INTO user_telegram (user_id, bot_token, chat_id, updated_at) VALUES (?, ?, ?, ?)",
+        (user_id, token or "", chat_id or "", _current_iso_ts()),
+    )
+    conn.commit()
+
+
+def _ensure_user_cron_defaults(conn, user_id: int) -> None:
+    exists = conn.execute("SELECT 1 FROM user_cron WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()
+    if exists:
+        return
+    every_hours = max(1, min(24, int(CONFIG.get("check_every_hours", 3))))
+    now = _current_iso_ts()
+    conn.execute("INSERT INTO user_cron (user_id, enabled, every_hours, updated_at, last_run_at) VALUES (?, 1, ?, ?, ?)",
+        (user_id, every_hours, now, now),
+    )
+    conn.commit()
+
+
+def ensure_user_defaults(conn, user_id: int) -> None:
+    _ensure_user_routes_defaults(conn, user_id)
+    _ensure_user_telegram_defaults(conn, user_id)
+    _ensure_user_cron_defaults(conn, user_id)
+
+
 def init_auth_tables():
     db = sqlite3.connect(auth_db_path())
     cur = db.cursor()
@@ -1039,6 +1089,7 @@ def auth_logout():
 def painel():
     db = get_auth_db()
     user = current_user()
+    ensure_user_defaults(db, user["id"])
     routes = db.execute(
         "SELECT id, origin, destination, outbound_date, inbound_date, active FROM user_routes WHERE user_id = ? ORDER BY id DESC",
         (user["id"],),
@@ -1046,8 +1097,8 @@ def painel():
     tg = db.execute("SELECT bot_token, chat_id FROM user_telegram WHERE user_id = ?", (user["id"],)).fetchone()
     cron = db.execute("SELECT enabled, every_hours FROM user_cron WHERE user_id = ?", (user["id"],)).fetchone()
     last_run = db.execute("SELECT started_at, finished_at, status, summary FROM user_runs WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user["id"],)).fetchone()
-    default_tg_bot = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    default_tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
+    default_tg_bot = os.getenv("TELEGRAM_BOT_TOKEN") or CONFIG.get("telegram_bot_token", "")
+    default_tg_chat = os.getenv("TELEGRAM_CHAT_ID") or CONFIG.get("telegram_chat_id", "")
 
     return render_template_string(
         """
