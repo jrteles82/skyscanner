@@ -31,7 +31,8 @@ app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.secret_key = os.getenv("SKYSCANNER_SECRET_KEY", "dev-change-this-secret")
 
 
-SCAN_INTERVAL_SECONDS = int(os.getenv("SKYSCANNER_FULL_SCAN_EVERY_SECONDS", str(3 * 60 * 60)))
+DEFAULT_SCAN_INTERVAL = int(CONFIG.get("full_scan_seconds", 3 * 60 * 60))
+SCAN_INTERVAL_SECONDS = int(os.getenv("SKYSCANNER_FULL_SCAN_EVERY_SECONDS", str(DEFAULT_SCAN_INTERVAL)))
 AUTO_SCAN_ENABLED = os.getenv("SKYSCANNER_AUTO_SCAN", "1") == "1"
 USER_SCAN_POLL_SECONDS = int(os.getenv("SKYSCANNER_USER_SCAN_POLL_SECONDS", "60"))
 _scan_lock = threading.Lock()
@@ -43,6 +44,14 @@ def build_full_scan_message(parsed: list[dict], trigger: str = "manual") -> str:
     def _price_num(row):
         v = row.get("price")
         return v if isinstance(v, (int, float)) and v is not None else 10**12
+
+    def _route_line(row, medal=""):
+        data_txt = f"{row.get('outbound_date')}" + (f" / {row.get('inbound_date')}" if row.get('inbound_date') else "")
+        vendor = (row.get("best_vendor") or "").strip()
+        line = f"{medal}{row.get('origin')}→{row.get('destination')} | {data_txt} | {row.get('price_fmt')}"
+        if vendor:
+            line += f" | vendedor: {vendor}"
+        return line
 
     if not parsed:
         return (
@@ -66,9 +75,7 @@ def build_full_scan_message(parsed: list[dict], trigger: str = "manual") -> str:
     if idas_ok:
         for i, r in enumerate(idas_ok[:3], start=1):
             medal = "🥇 " if i == 1 else ""
-            data_txt = f"{r.get('outbound_date')}" + (f" / {r.get('inbound_date')}" if r.get('inbound_date') else "")
-            vendor = r.get('best_vendor') or '-'
-            lines.append(f"{medal}{r.get('origin')}→{r.get('destination')} | {data_txt} | {r.get('price_fmt')} | {r.get('site')} | vendedor: {vendor}")
+            lines.append(_route_line(r, medal))
     else:
         lines.append("N/D")
 
@@ -76,9 +83,7 @@ def build_full_scan_message(parsed: list[dict], trigger: str = "manual") -> str:
     if voltas_ok:
         for i, r in enumerate(voltas_ok[:3], start=1):
             medal = "🥇 " if i == 1 else ""
-            data_txt = f"{r.get('outbound_date')}" + (f" / {r.get('inbound_date')}" if r.get('inbound_date') else "")
-            vendor = r.get('best_vendor') or '-'
-            lines.append(f"{medal}{r.get('origin')}→{r.get('destination')} | {data_txt} | {r.get('price_fmt')} | {r.get('site')} | vendedor: {vendor}")
+            lines.append(_route_line(r, medal))
     else:
         lines.append("N/D")
 

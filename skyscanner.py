@@ -63,13 +63,17 @@ except ImportError as exc:
     ) from exc
 
 
-CONFIG = {
+CONFIG_FILE = Path(__file__).with_name("skyscanner-config.json")
+
+DEFAULT_CONFIG = {
     "origin": "PVH",
-    "destinations_br": ["JPA", "REC", "NAT"], "destinations_sa": [],
+    "destinations_br": ["JPA", "REC", "NAT"],
+    "destinations_sa": [],
     "enable_south_america": False,
     "outbound_dates": ["2026-06-04", "2026-06-05"],
     "inbound_dates": ["2026-06-15", "2026-06-16"],
     "check_every_hours": 3,
+    "full_scan_seconds": 10800,
     "headless": True,
     "timeout_ms": 45000,
     "settle_seconds": 10,
@@ -82,6 +86,36 @@ CONFIG = {
     "target_site": "google_flights",
 }
 
+
+def _normalize_list(value):
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _load_user_config():
+    if not CONFIG_FILE.exists():
+        return {}
+    try:
+        with CONFIG_FILE.open(encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return {}
+
+    normalized = {}
+    array_keys = {"destinations_br", "destinations_sa", "outbound_dates", "inbound_dates"}
+    for key, value in payload.items():
+        if key in array_keys:
+            normalized[key] = _normalize_list(value)
+        else:
+            normalized[key] = value
+    return normalized
+
+
+CONFIG = dict(DEFAULT_CONFIG)
+CONFIG.update(_load_user_config())
 
 @dataclass
 class RouteQuery:
