@@ -1,219 +1,205 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang='pt-BR'>
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta charset='UTF-8' />
+    <meta name='viewport' content='width=device-width, initial-scale=1.0' />
     <title>Skyscanner Monitor</title>
-    <link
-      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-      rel="stylesheet"
-    />
+    <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css' rel='stylesheet'/>
   </head>
-  <body class="bg-light">
-    <div class="container py-4">
-      <h1 class="mb-4">✈️ Consulta de Passagens</h1>
-
-      <div class="card mb-3">
-        <div class="card-body">
-          <h5 class="card-title">Consulta rápida</h5>
-          <div class="row g-2">
-            <div class="col-md-3">
-              <select id="origin" class="form-select">
-                <option value="PVH" selected>PVH — Porto Velho (RO)</option>
-                <option value="RIO">RIO — Rio de Janeiro (RJ)</option>
-                <option value="SAO">SAO — São Paulo (SP)</option>
-                <option value="BSB">BSB — Brasília (DF)</option>
-                <option value="CGB">CGB — Cuiabá (MT)</option>
-                <option value="GYN">GYN — Goiânia (GO)</option>
-                <option value="MCZ">MCZ — Maceió (AL)</option>
-                <option value="AJU">AJU — Aracaju (SE)</option>
-                <option value="SSA">SSA — Salvador (BA)</option>
-                <option value="FOR">FOR — Fortaleza (CE)</option>
-                <option value="SLZ">SLZ — São Luís (MA)</option>
-                <option value="CGR">CGR — Campo Grande (MS)</option>
-                <option value="BHZ">BHZ — Belo Horizonte (MG)</option>
-                <option value="BEL">BEL — Belém (PA)</option>
-                <option value="JPA">JPA — João Pessoa (PB)</option>
-                <option value="CWB">CWB — Curitiba (PR)</option>
-                <option value="REC">REC — Recife (PE)</option>
-                <option value="THE">THE — Teresina (PI)</option>
-                <option value="NAT">NAT — Natal (RN)</option>
-                <option value="POA">POA — Porto Alegre (RS)</option>
-                <option value="FLN">FLN — Florianópolis (SC)</option>
-                <option value="VIX">VIX — Vitória (ES)</option>
-                <option value="MAO">MAO — Manaus (AM)</option>
-                <option value="RBR">RBR — Rio Branco (AC)</option>
-                <option value="BVB">BVB — Boa Vista (RR)</option>
-                <option value="MCP">MCP — Macapá (AP)</option>
-                <option value="PMW">PMW — Palmas (TO)</option>
-              </select>
-            </div>
-            <div class="col-md-3">
-              <select id="destination" class="form-select">
-                <option value="JPA" selected>JPA — João Pessoa (PB)</option>
-                <option value="REC">REC — Recife (PE)</option>
-                <option value="NAT">NAT — Natal (RN)</option>
-                <option value="SLZ">SLZ — São Luís (MA)</option>
-                <option value="THE">THE — Teresina (PI)</option>
-                <option value="FOR">FOR — Fortaleza (CE)</option>
-                <option value="MCZ">MCZ — Maceió (AL)</option>
-                <option value="AJU">AJU — Aracaju (SE)</option>
-                <option value="SSA">SSA — Salvador (BA)</option>
-                <option value="PVH">PVH — Porto Velho (RO)</option>
-                <option value="RIO">RIO — Rio de Janeiro (RJ)</option>
-                <option value="SAO">SAO — São Paulo (SP)</option>
-                <option value="BSB">BSB — Brasília (DF)</option>
-                <option value="CGB">CGB — Cuiabá (MT)</option>
-                <option value="GYN">GYN — Goiânia (GO)</option>
-                <option value="CGR">CGR — Campo Grande (MS)</option>
-                <option value="BHZ">BHZ — Belo Horizonte (MG)</option>
-                <option value="BEL">BEL — Belém (PA)</option>
-                <option value="CWB">CWB — Curitiba (PR)</option>
-                <option value="POA">POA — Porto Alegre (RS)</option>
-                <option value="FLN">FLN — Florianópolis (SC)</option>
-                <option value="VIX">VIX — Vitória (ES)</option>
-                <option value="MAO">MAO — Manaus (AM)</option>
-                <option value="RBR">RBR — Rio Branco (AC)</option>
-                <option value="BVB">BVB — Boa Vista (RR)</option>
-                <option value="MCP">MCP — Macapá (AP)</option>
-                <option value="PMW">PMW — Palmas (TO)</option>
-              </select>
-            </div>
-            <div class="col-md-3">
-              <input id="outbound_date" type="date" class="form-control" value="2026-06-05" />
-            </div>
-            <div class="col-md-2">
-              <input id="inbound_date" type="date" class="form-control" value="" />
-            </div>
-            <div class="col-md-2">
-              <select id="fonte" class="form-select">
-                <option value="google" selected>Google Flights</option>
-                <option value="skyscanner">Skyscanner</option>
-              </select>
-            </div>
-            <div class="col-md-2 d-grid">
-              <button id="btn-consultar" class="btn btn-primary" onclick="consultar()">Consultar</button>
-            </div>
+  <body class='bg-light'>
+    <div class='container-fluid py-3'>
+      <section class='mb-4 bg-white rounded shadow-sm p-3'>
+        <h5 class='mb-3'>Consulta rápida</h5>
+        <div class='row g-2'>
+          <div class='col-md-3'>
+            <select id='origin' class='form-select'>
+              <option value='PVH' selected>PVH — Porto Velho (RO)</option>
+              <option value='RIO'>RIO — Rio de Janeiro (RJ)</option>
+              <option value='SAO'>SAO — São Paulo (SP)</option>
+              <option value='BSB'>BSB — Brasília (DF)</option>
+              <option value='CGB'>CGB — Cuiabá (MT)</option>
+              <option value='GYN'>GYN — Goiânia (GO)</option>
+              <option value='MCZ'>MCZ — Maceió (AL)</option>
+              <option value='AJU'>AJU — Aracaju (SE)</option>
+              <option value='SSA'>SSA — Salvador (BA)</option>
+              <option value='FOR'>FOR — Fortaleza (CE)</option>
+              <option value='SLZ'>SLZ — São Luís (MA)</option>
+              <option value='CGR'>CGR — Campo Grande (MS)</option>
+              <option value='BHZ'>BHZ — Belo Horizonte (MG)</option>
+              <option value='BEL'>BEL — Belém (PA)</option>
+              <option value='JPA'>JPA — João Pessoa (PB)</option>
+              <option value='CWB'>CWB — Curitiba (PR)</option>
+              <option value='REC'>REC — Recife (PE)</option>
+              <option value='THE'>THE — Teresina (PI)</option>
+              <option value='NAT'>NAT — Natal (RN)</option>
+              <option value='POA'>POA — Porto Alegre (RS)</option>
+              <option value='FLN'>FLN — Florianópolis (SC)</option>
+              <option value='VIX'>VIX — Vitória (ES)</option>
+              <option value='MAO'>MAO — Manaus (AM)</option>
+              <option value='RBR'>RBR — Rio Branco (AC)</option>
+              <option value='BVB'>BVB — Boa Vista (RR)</option>
+              <option value='MCP'>MCP — Macapá (AP)</option>
+              <option value='PMW'>PMW — Palmas (TO)</option>
+            </select>
           </div>
-          <small class="text-muted">Se preencher volta, consulta como ida e volta.</small>
-
-          <div class="table-responsive mt-2">
-            <table class="table table-striped table-hover align-middle text-center" id="consulta-table">
-              <thead>
-                <tr>
-                  <th>Rota</th>
-                  <th>Data voo</th>
-                  <th>Preço</th>
-                  <th>Onde comprar mais barato</th>
-                  <th>Fonte</th>
-                  <th>Origem preço</th>
-                  <th>Data/Hora</th>
-                </tr>
-              </thead>
-              <tbody id="consulta-body">
-                <tr>
-                  <td colspan="7" class="text-center text-muted">Faça uma consulta para ver resultados.</td>
-                </tr>
-              </tbody>
-            </table>
+          <div class='col-md-3'>
+            <select id='destination' class='form-select'>
+              <option value='JPA' selected>JPA — João Pessoa (PB)</option>
+              <option value='REC'>REC — Recife (PE)</option>
+              <option value='NAT'>NAT — Natal (RN)</option>
+              <option value='SLZ'>SLZ — São Luís (MA)</option>
+              <option value='THE'>THE — Teresina (PI)</option>
+              <option value='FOR'>FOR — Fortaleza (CE)</option>
+              <option value='MCZ'>MCZ — Maceió (AL)</option>
+              <option value='AJU'>AJU — Aracaju (SE)</option>
+              <option value='SSA'>SSA — Salvador (BA)</option>
+              <option value='PVH'>PVH — Porto Velho (RO)</option>
+              <option value='RIO'>RIO — Rio de Janeiro (RJ)</option>
+              <option value='SAO'>SAO — São Paulo (SP)</option>
+              <option value='BSB'>BSB — Brasília (DF)</option>
+              <option value='CGB'>CGB — Cuiabá (MT)</option>
+              <option value='GYN'>GYN — Goiânia (GO)</option>
+              <option value='CGR'>CGR — Campo Grande (MS)</option>
+              <option value='BHZ'>BHZ — Belo Horizonte (MG)</option>
+              <option value='BEL'>BEL — Belém (PA)</option>
+              <option value='CWB'>CWB — Curitiba (PR)</option>
+              <option value='POA'>POA — Porto Alegre (RS)</option>
+              <option value='FLN'>FLN — Florianópolis (SC)</option>
+              <option value='VIX'>VIX — Vitória (ES)</option>
+              <option value='MAO'>MAO — Manaus (AM)</option>
+              <option value='RBR'>RBR — Rio Branco (AC)</option>
+              <option value='BVB'>BVB — Boa Vista (RR)</option>
+              <option value='MCP'>MCP — Macapá (AP)</option>
+              <option value='PMW'>PMW — Palmas (TO)</option>
+            </select>
+          </div>
+          <div class='col-md-3'>
+            <input id='outbound_date' type='date' class='form-control' value='2026-06-05' />
+          </div>
+          <div class='col-md-2'>
+            <input id='inbound_date' type='date' class='form-control' value='' />
+          </div>
+          <div class='col-md-2'>
+            <select id='fonte' class='form-select'>
+              <option value='google' selected>Google Flights</option>
+              <option value='skyscanner'>Skyscanner</option>
+            </select>
+          </div>
+          <div class='col-12 col-md-2 d-grid'>
+            <button id='btn-consultar' class='btn btn-primary' onclick='consultar()'>Consultar</button>
           </div>
         </div>
-      </div>
+        <small class='text-muted'>Se preencher volta, consulta como ida e volta.</small>
+      </section>
 
-      <div class="card mb-3">
-        <div class="card-body">
-          <div class="d-flex justify-content-between align-items-center mb-2">
-            <h5 class="card-title m-0">Buscar todos (cron)</h5>
-            <button id="btn-cron" class="btn btn-warning btn-sm" onclick="executarCron()">Executar busca completa</button>
-          </div>
-          <div id="cron-loading" class="text-muted mb-2" style="display:none;">Buscando rotas... isso pode levar alguns minutos.</div>
-          <div class="table-responsive">
-            <table class="table table-striped table-hover align-middle text-center" id="cron-table">
-              <thead>
-                <tr>
-                  <th>Rota</th>
-                  <th>Data voo</th>
-                  <th>Preço</th>
-                  <th>Onde comprar mais barato</th>
-                  <th>Fonte</th>
-                  <th>Origem preço</th>
-                  <th>Data/Hora</th>
-                </tr>
-              </thead>
-              <tbody id="cron-body">
-                <tr><td colspan="7" class="text-center text-muted">Clique em “Executar busca completa”.</td></tr>
-              </tbody>
-            </table>
+      <section class='mb-3 bg-white rounded shadow-sm p-3'>
+        <h5 class='mb-3'>Resultados da consulta</h5>
+        <div class='table-responsive'>
+          <table class='table table-striped table-hover align-middle text-center' id='consulta-table'>
+            <thead>
+              <tr>
+                <th>Rota</th>
+                <th>Data voo</th>
+                <th>Preço</th>
+                <th>Onde comprar mais barato</th>
+                <th>Fonte</th>
+                <th>Origem preço</th>
+                <th>Data/Hora</th>
+              </tr>
+            </thead>
+            <tbody id='consulta-body'>
+              <tr>
+                <td colspan='7' class='text-center text-muted'>Faça uma consulta para ver resultados.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class='mb-3 bg-white rounded shadow-sm p-3'>
+        <div class='d-flex justify-content-between align-items-center mb-2'>
+          <h5 class='m-0'>Buscar todos (cron)</h5>
+          <button id='btn-cron' class='btn btn-warning btn-sm' onclick='executarCron()'>Executar busca completa</button>
+        </div>
+        <div id='cron-loading' class='text-muted mb-2' style='display:none;'>Buscando rotas... isso pode levar alguns minutos.</div>
+        <div class='table-responsive'>
+          <table class='table table-striped table-hover align-middle text-center' id='cron-table'>
+            <thead>
+              <tr>
+                <th>Rota</th>
+                <th>Data voo</th>
+                <th>Preço</th>
+                <th>Onde comprar mais barato</th>
+                <th>Fonte</th>
+                <th>Origem preço</th>
+                <th>Data/Hora</th>
+              </tr>
+            </thead>
+            <tbody id='cron-body'>
+              <tr><td colspan='7' class='text-center text-muted'>Clique em “Executar busca completa”.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class='mb-3 bg-white rounded shadow-sm p-3'>
+        <div class='d-flex justify-content-between align-items-center mb-2'>
+          <h5 class='m-0'>Histórico</h5>
+          <div class='d-flex gap-2'>
+            <input id='historico-limit' type='number' class='form-control form-control-sm' value='20' min='1' max='200' style='width: 90px;' />
+            <button class='btn btn-outline-success btn-sm' onclick='historico()'>Atualizar</button>
           </div>
         </div>
-      </div>
-
-      <div class="card">
-        <div class="card-body">
-          <div class="d-flex justify-content-between align-items-center mb-2">
-            <h5 class="card-title m-0">Histórico</h5>
-            <div class="d-flex gap-2">
-              <input id="historico-limit" type="number" class="form-control form-control-sm" value="20" min="1" max="200" style="width: 90px;" />
-              <button class="btn btn-outline-success btn-sm" onclick="historico()">Atualizar</button>
-            </div>
-          </div>
-
-          <div id="historico-loading" class="text-muted mb-2" style="display:none;">Carregando histórico...</div>
-          <div class="table-responsive">
-            <table class="table table-striped table-hover align-middle text-center" id="historico-table">
-              <thead>
-                <tr>
-                  <th>Rota</th>
-                  <th>Data voo</th>
-                  <th>Preço</th>
-                  <th>Onde comprar mais barato</th>
-                  <th>Fonte</th>
-                  <th>Origem preço</th>
-                  <th>Data/Hora</th>
-                </tr>
-              </thead>
-              <tbody id="historico-body">
-                <tr>
-                  <td colspan="7" class="text-center text-muted">Clique em “Atualizar” para carregar.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+        <div id='historico-loading' class='text-muted mb-2' style='display:none;'>Carregando histórico...</div>
+        <div class='table-responsive'>
+          <table class='table table-striped table-hover align-middle text-center' id='historico-table'>
+            <thead>
+              <tr>
+                <th>Rota</th>
+                <th>Data voo</th>
+                <th>Preço</th>
+                <th>Onde comprar mais barato</th>
+                <th>Fonte</th>
+                <th>Origem preço</th>
+                <th>Data/Hora</th>
+              </tr>
+            </thead>
+            <tbody id='historico-body'>
+              <tr>
+                <td colspan='7' class='text-center text-muted'>Clique em “Atualizar” para carregar.</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-      </div>
+      </section>
 
-
-      <div class="card mb-3">
-        <div class="card-body">
-          <div class="d-flex justify-content-between align-items-center mb-2">
-            <h5 class="card-title m-0">Rotas configuradas</h5>
-            <button class="btn btn-outline-secondary btn-sm" onclick="rotas()">Atualizar</button>
-          </div>
-
-          <div id="rotas-loading" class="text-muted mb-2" style="display:none;">Carregando rotas...</div>
-          <div class="table-responsive">
-            <table class="table table-striped table-hover align-middle text-center" id="rotas-table">
-              <thead>
-                <tr>
-                  <th>Origem</th>
-                  <th>Destino</th>
-                  <th>Ida</th>
-                  <th>Volta</th>
-                  <th>Tipo</th>
-                </tr>
-              </thead>
-              <tbody id="rotas-body">
-                <tr>
-                  <td colspan="5" class="text-center text-muted">Clique em “Atualizar” para carregar.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+      <section class='mb-3 bg-white rounded shadow-sm p-3'>
+        <div class='d-flex justify-content-between align-items-center mb-2'>
+          <h5 class='m-0'>Rotas configuradas</h5>
+          <button class='btn btn-outline-secondary btn-sm' onclick='rotas()'>Atualizar</button>
         </div>
-      </div>
+        <div id='rotas-loading' class='text-muted mb-2' style='display:none;'>Carregando rotas...</div>
+        <div class='table-responsive'>
+          <table class='table table-striped table-hover align-middle text-center' id='rotas-table'>
+            <thead>
+              <tr>
+                <th>Origem</th>
+                <th>Destino</th>
+                <th>Ida</th>
+                <th>Volta</th>
+                <th>Tipo</th>
+              </tr>
+            </thead>
+            <tbody id='rotas-body'>
+              <tr>
+                <td colspan='5' class='text-center text-muted'>Clique em “Atualizar” para carregar.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
-
-    <script>
+<script>
       function pretty(data) {
         return JSON.stringify(data, null, 2);
       }
