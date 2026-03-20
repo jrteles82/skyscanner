@@ -1225,9 +1225,18 @@ def painel():
                 </div>
 
                 <div class='card mb-3 shadow-sm dashboard-section d-none' id='consultas'>
-                  <div class='card-header'><i class='bi bi-window me-2'></i>App Consultas</div>
-                  <div class='card-body p-0'>
-                    <iframe src='{{ url_for("app_front") }}' style='width:100%;height:78vh;border:0;'></iframe>
+                  <div class='card-header d-flex justify-content-between align-items-center'>
+                    <div>
+                      <i class='bi bi-window me-2'></i>App Consultas
+                      <small class='text-muted d-block'>Veja o dashboard em tempo real, atualize rotas e acompanhe o histórico de execução.</small>
+                    </div>
+                    <button class='btn btn-sm btn-outline-secondary' type='button' onclick='document.getElementById('consultas-frame').contentWindow.location.reload();'>Recarregar</button>
+                  </div>
+                  <div class='card-body'>
+                    <p class='text-muted small mb-3'>O iframe traz a interface do monitor por completo. Use as guias ao lado para alternar entre rotas, cron e notificações.</p>
+                    <div class='ratio ratio-16x9 shadow-sm rounded overflow-hidden'>
+                      <iframe id='consultas-frame' src='{{ url_for("app_front") }}' class='border-0' allowfullscreen></iframe>
+                    </div>
                   </div>
                 </div>
 
