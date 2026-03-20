@@ -1112,12 +1112,13 @@ def painel():
     ).fetchall()
     tg = db.execute("SELECT bot_token, chat_id FROM user_telegram WHERE user_id = ?", (user["id"],)).fetchone()
     cron = db.execute("SELECT enabled, every_hours, schedule_minutes FROM user_cron WHERE user_id = ?", (user["id"],)).fetchone()
-    if cron and cron.get("schedule_minutes") is not None:
-        cron_minutes = int(cron["schedule_minutes"] or DEFAULT_SCHEDULE_MINUTES)
-    elif cron and cron.get("every_hours") is not None:
-        cron_minutes = max(1, int(cron["every_hours"]) * 60)
-    else:
-        cron_minutes = DEFAULT_SCHEDULE_MINUTES
+    cron_minutes = DEFAULT_SCHEDULE_MINUTES
+    if cron is not None:
+        schedule_minutes = cron["schedule_minutes"]
+        if schedule_minutes is not None:
+            cron_minutes = int(schedule_minutes)
+        elif cron["every_hours"] is not None:
+            cron_minutes = max(1, int(cron["every_hours"]) * 60)
     last_run = db.execute("SELECT started_at, finished_at, status, summary FROM user_runs WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user["id"],)).fetchone()
     default_tg_bot = os.getenv("TELEGRAM_BOT_TOKEN") or CONFIG.get("telegram_bot_token", "")
     default_tg_chat = os.getenv("TELEGRAM_CHAT_ID") or CONFIG.get("telegram_chat_id", "")
