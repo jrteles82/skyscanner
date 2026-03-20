@@ -1354,4 +1354,5 @@ def save_cron():
 if __name__ == "__main__":
     init_auth_tables()
     start_auto_scan_if_needed()
-    app.run(debug=True)
+    debug_mode = os.getenv("FLASK_DEBUG", "0").strip().lower() in ("1", "true", "yes")
+    app.run(debug=debug_mode)
