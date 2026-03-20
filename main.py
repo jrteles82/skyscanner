@@ -1228,15 +1228,201 @@ def painel():
                   <div class='card-header d-flex justify-content-between align-items-center'>
                     <div>
                       <i class='bi bi-window me-2'></i>App Consultas
-                      <small class='text-muted d-block'>Veja o dashboard em tempo real, atualize rotas e acompanhe o histórico de execução.</small>
+                      <small class='text-muted d-block'>Executa buscas com o cron integrando histórico, rotas e consultas manuais.</small>
                     </div>
-                    <button class='btn btn-sm btn-outline-secondary' type='button' onclick='document.getElementById('consultas-frame').contentWindow.location.reload();'>Recarregar</button>
+                    <button class='btn btn-sm btn-outline-secondary' type='button' onclick='document.getElementById('btn-consultar').scrollIntoView({behavior: "smooth"});'>Ir para consulta</button>
                   </div>
                   <div class='card-body'>
-                    <p class='text-muted small mb-3'>O iframe traz a interface do monitor por completo. Use as guias ao lado para alternar entre rotas, cron e notificações.</p>
-                    <div class='ratio ratio-16x9 shadow-sm rounded overflow-hidden'>
-                      <iframe id='consultas-frame' src='{{ url_for("app_front") }}' class='border-0' allowfullscreen></iframe>
-                    </div>
+                    <section class='mb-4'>
+                      <div class='row g-2 align-items-end'>
+                        <div class='col-md-3'>
+                          <label class='form-label small text-uppercase'>Origem</label>
+                          <select id='origin' class='form-select form-select-sm'>
+                            <option value='PVH' selected>PVH — Porto Velho (RO)</option>
+                            <option value='RIO'>RIO — Rio de Janeiro (RJ)</option>
+                            <option value='SAO'>SAO — São Paulo (SP)</option>
+                            <option value='BSB'>BSB — Brasília (DF)</option>
+                            <option value='CGB'>CGB — Cuiabá (MT)</option>
+                            <option value='GYN'>GYN — Goiânia (GO)</option>
+                            <option value='MCZ'>MCZ — Maceió (AL)</option>
+                            <option value='AJU'>AJU — Aracaju (SE)</option>
+                            <option value='SSA'>SSA — Salvador (BA)</option>
+                            <option value='FOR'>FOR — Fortaleza (CE)</option>
+                            <option value='SLZ'>SLZ — São Luís (MA)</option>
+                            <option value='CGR'>CGR — Campo Grande (MS)</option>
+                            <option value='BHZ'>BHZ — Belo Horizonte (MG)</option>
+                            <option value='BEL'>BEL — Belém (PA)</option>
+                            <option value='JPA'>JPA — João Pessoa (PB)</option>
+                            <option value='CWB'>CWB — Curitiba (PR)</option>
+                            <option value='REC'>REC — Recife (PE)</option>
+                            <option value='THE'>THE — Teresina (PI)</option>
+                            <option value='NAT'>NAT — Natal (RN)</option>
+                            <option value='POA'>POA — Porto Alegre (RS)</option>
+                            <option value='FLN'>FLN — Florianópolis (SC)</option>
+                            <option value='VIX'>VIX — Vitória (ES)</option>
+                            <option value='MAO'>MAO — Manaus (AM)</option>
+                            <option value='RBR'>RBR — Rio Branco (AC)</option>
+                            <option value='BVB'>BVB — Boa Vista (RR)</option>
+                            <option value='MCP'>MCP — Macapá (AP)</option>
+                            <option value='PMW'>PMW — Palmas (TO)</option>
+                          </select>
+                        </div>
+                        <div class='col-md-3'>
+                          <label class='form-label small text-uppercase'>Destino</label>
+                          <select id='destination' class='form-select form-select-sm'>
+                            <option value='JPA' selected>JPA — João Pessoa (PB)</option>
+                            <option value='REC'>REC — Recife (PE)</option>
+                            <option value='NAT'>NAT — Natal (RN)</option>
+                            <option value='SLZ'>SLZ — São Luís (MA)</option>
+                            <option value='THE'>THE — Teresina (PI)</option>
+                            <option value='FOR'>FOR — Fortaleza (CE)</option>
+                            <option value='MCZ'>MCZ — Maceió (AL)</option>
+                            <option value='AJU'>AJU — Aracaju (SE)</option>
+                            <option value='SSA'>SSA — Salvador (BA)</option>
+                            <option value='PVH'>PVH — Porto Velho (RO)</option>
+                            <option value='RIO'>RIO — Rio de Janeiro (RJ)</option>
+                            <option value='SAO'>SAO — São Paulo (SP)</option>
+                            <option value='BSB'>BSB — Brasília (DF)</option>
+                            <option value='CGB'>CGB — Cuiabá (MT)</option>
+                            <option value='GYN'>GYN — Goiânia (GO)</option>
+                            <option value='CGR'>CGR — Campo Grande (MS)</option>
+                            <option value='BHZ'>BHZ — Belo Horizonte (MG)</option>
+                            <option value='BEL'>BEL — Belém (PA)</option>
+                            <option value='CWB'>CWB — Curitiba (PR)</option>
+                            <option value='POA'>POA — Porto Alegre (RS)</option>
+                            <option value='FLN'>FLN — Florianópolis (SC)</option>
+                            <option value='VIX'>VIX — Vitória (ES)</option>
+                            <option value='MAO'>MAO — Manaus (AM)</option>
+                            <option value='RBR'>RBR — Rio Branco (AC)</option>
+                            <option value='BVB'>BVB — Boa Vista (RR)</option>
+                            <option value='MCP'>MCP — Macapá (AP)</option>
+                            <option value='PMW'>PMW — Palmas (TO)</option>
+                          </select>
+                        </div>
+                        <div class='col-md-2'>
+                          <label class='form-label small text-uppercase'>Ida</label>
+                          <input id='outbound_date' type='date' class='form-control form-control-sm' value='2026-06-05' />
+                        </div>
+                        <div class='col-md-2'>
+                          <label class='form-label small text-uppercase'>Volta</label>
+                          <input id='inbound_date' type='date' class='form-control form-control-sm' value='' />
+                        </div>
+                        <div class='col-md-2'>
+                          <label class='form-label small text-uppercase'>Fonte</label>
+                          <select id='fonte' class='form-select form-select-sm'>
+                            <option value='google' selected>Google Flights</option>
+                            <option value='skyscanner'>Skyscanner</option>
+                          </select>
+                        </div>
+                        <div class='col-12 col-md-1 d-grid'>
+                          <button id='btn-consultar' class='btn btn-primary btn-sm' onclick='consultar()'>Consultar</button>
+                        </div>
+                      </div>
+                      <small class='text-muted d-block mt-2'>Se preencher volta, consulta como ida e volta.</small>
+                    </section>
+                    <section class='mb-4'>
+                      <h6 class='text-uppercase text-muted mb-3'>Resultados da consulta</h6>
+                      <div class='table-responsive'>
+                        <table class='table table-striped table-hover align-middle text-center mb-0' id='consulta-table'>
+                          <thead class='table-light'>
+                            <tr>
+                              <th>Rota</th>
+                              <th>Data voo</th>
+                              <th>Preço</th>
+                              <th>Onde comprar mais barato</th>
+                              <th>Fonte</th>
+                              <th>Origem preço</th>
+                              <th>Data/Hora</th>
+                            </tr>
+                          </thead>
+                          <tbody id='consulta-body'>
+                            <tr>
+                              <td colspan='7' class='text-center text-muted'>Faça uma consulta para ver resultados.</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                    <section class='mb-4'>
+                      <div class='d-flex justify-content-between align-items-center mb-2'>
+                        <h6 class='text-uppercase text-muted m-0'>Buscar todos (cron)</h6>
+                        <button id='btn-cron' class='btn btn-warning btn-sm' type='button' onclick='executarCron()'>Executar busca completa</button>
+                      </div>
+                      <div id='cron-loading' class='text-muted mb-2' style='display:none;'>Buscando rotas... isso pode levar alguns minutos.</div>
+                      <div class='table-responsive'>
+                        <table class='table table-striped table-hover align-middle text-center mb-0' id='cron-table'>
+                          <thead class='table-light'>
+                            <tr>
+                              <th>Rota</th>
+                              <th>Data voo</th>
+                              <th>Preço</th>
+                              <th>Onde comprar mais barato</th>
+                              <th>Fonte</th>
+                              <th>Origem preço</th>
+                              <th>Data/Hora</th>
+                            </tr>
+                          </thead>
+                          <tbody id='cron-body'>
+                            <tr><td colspan='7' class='text-center text-muted'>Clique em “Executar busca completa”.</td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                    <section class='mb-4'>
+                      <div class='d-flex justify-content-between align-items-center mb-2'>
+                        <h6 class='text-uppercase text-muted m-0'>Histórico</h6>
+                        <div class='d-flex gap-2'>
+                          <input id='historico-limit' type='number' class='form-control form-control-sm' value='20' min='1' max='200' style='width: 90px;' />
+                          <button class='btn btn-outline-success btn-sm' type='button' onclick='historico()'>Atualizar</button>
+                        </div>
+                      </div>
+                      <div id='historico-loading' class='text-muted mb-2' style='display:none;'>Carregando histórico...</div>
+                      <div class='table-responsive'>
+                        <table class='table table-striped table-hover align-middle text-center mb-0' id='historico-table'>
+                          <thead class='table-light'>
+                            <tr>
+                              <th>Rota</th>
+                              <th>Data voo</th>
+                              <th>Preço</th>
+                              <th>Onde comprar mais barato</th>
+                              <th>Fonte</th>
+                              <th>Origem preço</th>
+                              <th>Data/Hora</th>
+                            </tr>
+                          </thead>
+                          <tbody id='historico-body'>
+                            <tr>
+                              <td colspan='7' class='text-center text-muted'>Clique em “Atualizar” para carregar.</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                    <section>
+                      <div class='d-flex justify-content-between align-items-center mb-2'>
+                        <h6 class='text-uppercase text-muted m-0'>Rotas configuradas</h6>
+                        <button class='btn btn-outline-secondary btn-sm' type='button' onclick='rotas()'>Atualizar</button>
+                      </div>
+                      <div id='rotas-loading' class='text-muted mb-2' style='display:none;'>Carregando rotas...</div>
+                      <div class='table-responsive'>
+                        <table class='table table-striped table-hover align-middle text-center mb-0' id='rotas-table'>
+                          <thead class='table-light'>
+                            <tr>
+                              <th>Origem</th>
+                              <th>Destino</th>
+                              <th>Ida</th>
+                              <th>Volta</th>
+                              <th>Tipo</th>
+                            </tr>
+                          </thead>
+                          <tbody id='rotas-body'>
+                            <tr>
+                              <td colspan='5' class='text-center text-muted'>Clique em “Atualizar” para carregar.</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
                   </div>
                 </div>
 
@@ -1280,6 +1466,7 @@ def painel():
               </main>
             </div>
           </div>
+        <script src='{{ url_for("static", filename="consulta-app.js") }}'></script>
         <script>
           function showSection(hash) {
             document.querySelectorAll('.dashboard-section').forEach(el => el.classList.add('d-none'));
