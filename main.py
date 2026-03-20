@@ -32,6 +32,7 @@ app.secret_key = os.getenv("SKYSCANNER_SECRET_KEY", "dev-change-this-secret")
 
 
 DEFAULT_SCAN_INTERVAL = int(CONFIG.get("full_scan_seconds", 3 * 60 * 60))
+DEFAULT_SCHEDULE_MINUTES = max(1, int(CONFIG.get("schedule_minutes", DEFAULT_SCAN_INTERVAL // 60)))
 SCAN_INTERVAL_SECONDS = int(os.getenv("SKYSCANNER_FULL_SCAN_EVERY_SECONDS", str(DEFAULT_SCAN_INTERVAL)))
 AUTO_SCAN_ENABLED = os.getenv("SKYSCANNER_AUTO_SCAN", "1") == "1"
 USER_SCAN_POLL_SECONDS = int(os.getenv("SKYSCANNER_USER_SCAN_POLL_SECONDS", "60"))
@@ -258,15 +259,16 @@ def start_auto_scan_if_needed():
     print(f"[auto-scan] ligado: intervalo {SCAN_INTERVAL_SECONDS}s + cron por usuário")
 
 
-def _should_run_user_now(conn, user_id: int, every_hours: int) -> bool:
+def _should_run_user_now(conn, user_id: int, schedule_minutes: int) -> bool:
     row = conn.execute(
         "SELECT last_run_at, updated_at FROM user_cron WHERE user_id = ?",
         (user_id,),
     ).fetchone()
+    interval_seconds = max(60, schedule_minutes * 60)
     if row and row["last_run_at"]:
         try:
             last_started = datetime.fromisoformat(row["last_run_at"])
-            return (datetime.now() - last_started).total_seconds() >= (every_hours * 3600)
+            return (datetime.now() - last_started).total_seconds() >= interval_seconds
         except Exception:
             pass
 
@@ -280,7 +282,7 @@ def _should_run_user_now(conn, user_id: int, every_hours: int) -> bool:
         last_started = datetime.fromisoformat(fallback["started_at"])
     except Exception:
         return True
-    return (datetime.now() - last_started).total_seconds() >= (every_hours * 3600)
+    return (datetime.now() - last_started).total_seconds() >= interval_seconds
 
 
 def _user_scan_scheduler_loop():
@@ -292,7 +294,8 @@ def _user_scan_scheduler_loop():
                 """
                 SELECT u.id AS user_id,
                        COALESCE(c.enabled, 1) AS enabled,
-                       COALESCE(c.every_hours, 3) AS every_hours
+                       c.schedule_minutes,
+                       c.every_hours
                 FROM users u
                 LEFT JOIN user_cron c ON c.user_id = u.id
                 """
@@ -300,8 +303,15 @@ def _user_scan_scheduler_loop():
             for u in users:
                 if int(u["enabled"] or 0) != 1:
                     continue
-                every_hours = max(1, min(24, int(u["every_hours"] or 3)))
-                if not _should_run_user_now(conn, int(u["user_id"]), every_hours):
+                schedule_minutes = u["schedule_minutes"]
+                if schedule_minutes is None:
+                    fallback_hours = u["every_hours"]
+                    if fallback_hours and fallback_hours > 0:
+                        schedule_minutes = int(fallback_hours) * 60
+                    else:
+                        schedule_minutes = DEFAULT_SCHEDULE_MINUTES
+                schedule_minutes = max(1, int(schedule_minutes))
+                if not _should_run_user_now(conn, int(u["user_id"]), schedule_minutes):
                     continue
                 try:
                     run_user_scan(int(u["user_id"]), trigger="agendada-usuario")
@@ -819,11 +829,8 @@ def get_auth_db():
     return g.auth_db
 
 
-
-
 def _current_iso_ts() -> str:
     return datetime.now().isoformat()
-
 
 def _ensure_user_routes_defaults(conn, user_id: int) -> None:
     exists = conn.execute("SELECT 1 FROM user_routes WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()
@@ -835,7 +842,6 @@ def _ensure_user_routes_defaults(conn, user_id: int) -> None:
             (user_id, route.origin, route.destination, route.outbound_date, route.inbound_date or "", now),
         )
     conn.commit()
-
 
 def _ensure_user_telegram_defaults(conn, user_id: int) -> None:
     exists = conn.execute("SELECT 1 FROM user_telegram WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()
@@ -850,23 +856,26 @@ def _ensure_user_telegram_defaults(conn, user_id: int) -> None:
     )
     conn.commit()
 
-
 def _ensure_user_cron_defaults(conn, user_id: int) -> None:
     exists = conn.execute("SELECT 1 FROM user_cron WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()
     if exists:
         return
-    every_hours = max(1, min(24, int(CONFIG.get("check_every_hours", 3))))
+    schedule_minutes = DEFAULT_SCHEDULE_MINUTES
+    every_hours = max(1, min(24, round(schedule_minutes / 60)))
     now = _current_iso_ts()
-    conn.execute("INSERT INTO user_cron (user_id, enabled, every_hours, updated_at, last_run_at) VALUES (?, 1, ?, ?, ?)",
-        (user_id, every_hours, now, now),
+    conn.execute("INSERT INTO user_cron (user_id, enabled, every_hours, schedule_minutes, updated_at, last_run_at) VALUES (?, 1, ?, ?, ?, ?)",
+        (user_id, every_hours, schedule_minutes, now, now),
     )
     conn.commit()
-
 
 def ensure_user_defaults(conn, user_id: int) -> None:
     _ensure_user_routes_defaults(conn, user_id)
     _ensure_user_telegram_defaults(conn, user_id)
     _ensure_user_cron_defaults(conn, user_id)
+
+
+
+
 
 
 def init_auth_tables():
@@ -914,6 +923,7 @@ def init_auth_tables():
             user_id INTEGER PRIMARY KEY,
             enabled INTEGER DEFAULT 1,
             every_hours INTEGER DEFAULT 3,
+            schedule_minutes INTEGER DEFAULT 60,
             updated_at TEXT NOT NULL,
             last_run_at TEXT,
             FOREIGN KEY(user_id) REFERENCES users(id)
@@ -936,12 +946,18 @@ def init_auth_tables():
     )
     for ddl in [
         "ALTER TABLE user_cron ADD COLUMN last_run_at TEXT",
+        "ALTER TABLE user_cron ADD COLUMN schedule_minutes INTEGER",
         "ALTER TABLE user_runs ADD COLUMN trigger TEXT DEFAULT 'manual-user'",
     ]:
         try:
             cur.execute(ddl)
         except sqlite3.OperationalError:
             pass
+
+    try:
+        cur.execute("UPDATE user_cron SET schedule_minutes = COALESCE(schedule_minutes, every_hours * 60, ?) WHERE schedule_minutes IS NULL", (DEFAULT_SCHEDULE_MINUTES,))
+    except sqlite3.OperationalError:
+        pass
 
     db.commit()
     db.close()
@@ -1095,7 +1111,13 @@ def painel():
         (user["id"],),
     ).fetchall()
     tg = db.execute("SELECT bot_token, chat_id FROM user_telegram WHERE user_id = ?", (user["id"],)).fetchone()
-    cron = db.execute("SELECT enabled, every_hours FROM user_cron WHERE user_id = ?", (user["id"],)).fetchone()
+    cron = db.execute("SELECT enabled, every_hours, schedule_minutes FROM user_cron WHERE user_id = ?", (user["id"],)).fetchone()
+    if cron and cron.get("schedule_minutes") is not None:
+        cron_minutes = int(cron["schedule_minutes"] or DEFAULT_SCHEDULE_MINUTES)
+    elif cron and cron.get("every_hours") is not None:
+        cron_minutes = max(1, int(cron["every_hours"]) * 60)
+    else:
+        cron_minutes = DEFAULT_SCHEDULE_MINUTES
     last_run = db.execute("SELECT started_at, finished_at, status, summary FROM user_runs WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user["id"],)).fetchone()
     default_tg_bot = os.getenv("TELEGRAM_BOT_TOKEN") or CONFIG.get("telegram_bot_token", "")
     default_tg_chat = os.getenv("TELEGRAM_CHAT_ID") or CONFIG.get("telegram_chat_id", "")
@@ -1150,7 +1172,7 @@ def painel():
                 <div class='p-4'>
                 <div class='row g-3 mb-3'>
                   <div class='col-md-4'><div class='card kpi'><div class='card-body'><div class='text-muted'>Rotas</div><div class='h4 mb-0'>{{ routes|length }}</div></div></div></div>
-                  <div class='col-md-4'><div class='card kpi'><div class='card-body'><div class='text-muted'>Cron</div><div class='h6 mb-0'>{% if not cron or cron['enabled'] %}Ativo{% else %}Inativo{% endif %} ({{ cron['every_hours'] if cron else 3 }}h)</div></div></div></div>
+                  <div class='col-md-4'><div class='card kpi'><div class='card-body'><div class='text-muted'>Cron</div><div class='h6 mb-0'>{% if not cron or cron['enabled'] %}Ativo{% else %}Inativo{% endif %} ({{ cron_minutes }} min)</div></div></div></div>
                   <div class='col-md-4'><div class='card kpi'><div class='card-body'><div class='text-muted'>Última execução</div><div class='small mb-0'>{% if last_run %}{{last_run['status']}}{% else %}sem execução{% endif %}</div></div></div></div>
                 </div>
 
@@ -1227,7 +1249,7 @@ def painel():
                         <input class='form-check-input' type='checkbox' name='enabled' id='enabled' {% if not cron or cron['enabled'] %}checked{% endif %}>
                         <label class='form-check-label' for='enabled'>Ativo</label>
                       </div>
-                      <div class='col-md-3'><input class='form-control' name='every_hours' type='number' min='1' max='24' value='{{ cron["every_hours"] if cron else 3 }}'></div>
+                      <div class='col-md-3'><input class='form-control' name='schedule_minutes' type='number' min='1' max='1440' step='1' value='{{ cron_minutes }}'></div>
                       <div class='col-md-2 d-grid'><button class='btn btn-primary' type='submit'>Salvar</button></div>
                     </form>
                     <form method='post' action='{{ url_for("run_now_user") }}' class='mt-3'>
@@ -1293,6 +1315,7 @@ def painel():
         routes=routes,
         tg=tg,
         cron=cron,
+        cron_minutes=cron_minutes,
         last_run=last_run,
         default_tg_bot=default_tg_bot,
         default_tg_chat=default_tg_chat,
@@ -1391,17 +1414,20 @@ def save_cron():
     db = get_auth_db()
     user = current_user()
     enabled = 1 if request.form.get("enabled") else 0
-    every_hours = max(1, min(24, int(request.form.get("every_hours", 3))))
+    schedule_minutes = max(1, min(1440, int(request.form.get("schedule_minutes", DEFAULT_SCHEDULE_MINUTES))))
+    hours_from_minutes = (schedule_minutes + 59) // 60
+    every_hours = max(1, min(24, hours_from_minutes))
     db.execute(
         """
-        INSERT INTO user_cron (user_id, enabled, every_hours, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO user_cron (user_id, enabled, every_hours, schedule_minutes, updated_at)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
           enabled = excluded.enabled,
           every_hours = excluded.every_hours,
+          schedule_minutes = excluded.schedule_minutes,
           updated_at = excluded.updated_at
         """,
-        (user["id"], enabled, every_hours, datetime.now().isoformat()),
+        (user["id"], enabled, every_hours, schedule_minutes, datetime.now().isoformat()),
     )
     db.commit()
     return redirect(url_for("painel", _anchor="cron"))

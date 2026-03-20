@@ -16,5 +16,6 @@
     "2026-06-16"
   ],
   "check_every_hours": 3,
-  "full_scan_seconds": 1800
+  "full_scan_seconds": 1800,
+  "schedule_minutes": 30
 }

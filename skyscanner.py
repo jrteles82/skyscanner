@@ -74,6 +74,7 @@ DEFAULT_CONFIG = {
     "inbound_dates": ["2026-06-15", "2026-06-16"],
     "check_every_hours": 3,
     "full_scan_seconds": 10800,
+    "schedule_minutes": 180,
     "headless": True,
     "timeout_ms": 45000,
     "settle_seconds": 10,
