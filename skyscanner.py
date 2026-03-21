@@ -254,7 +254,7 @@ class Database:
         return min_price, avg_price, last_price
 
 
-def build_queries() -> List[RouteQuery]:
+def build_config_queries() -> List[RouteQuery]:
     destinations = list(CONFIG["destinations_br"])
     if CONFIG["enable_south_america"]:
         destinations.extend(CONFIG["destinations_sa"])
@@ -287,6 +287,42 @@ def build_queries() -> List[RouteQuery]:
                     )
                 )
     return queries
+
+
+def build_db_routes_from_rows(rows):
+    queries = []
+    for row in rows:
+        origin = (row["origin"] or "").strip().upper()
+        destination = (row["destination"] or "").strip().upper()
+        outbound = (row["outbound_date"] or "").strip()
+        inbound = (row["inbound_date"] or "").strip()
+        if not origin or not destination or not outbound:
+            continue
+        trip_type = "roundtrip" if inbound else "oneway"
+        queries.append(RouteQuery(
+            origin=origin,
+            destination=destination,
+            outbound_date=outbound,
+            inbound_date=inbound,
+            trip_type=trip_type,
+        ))
+    return queries
+
+
+def load_user_routes_from_db(path: str) -> List[RouteQuery]:
+    if not Path(path).exists():
+        return []
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT origin, destination, outbound_date, inbound_date FROM user_routes WHERE active = 1").fetchall()
+        return build_db_routes_from_rows(rows)
+    finally:
+        conn.close()
+
+
+def build_db_queries(path: str) -> List[RouteQuery]:
+    return load_user_routes_from_db(path)
 
 
 def classify_price(price: Optional[float], min_price: Optional[float], avg_price: Optional[float]) -> str:
@@ -894,3 +930,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+build_queries = build_config_queries

@@ -185,7 +185,6 @@
             destination: document.getElementById('destination').value,
             outbound_date: document.getElementById('outbound_date').value,
             inbound_date: document.getElementById('inbound_date').value,
-            fonte: document.getElementById('fonte').value,
           });
 
           const res = await fetch(`/consulta?${params.toString()}`);

@@ -20,7 +20,8 @@ from skyscanner import (
     FlightResult,
     GoogleFlightsScraper,
     RouteQuery,
-    build_queries,
+    build_config_queries,
+    build_db_queries,
     classify_price,
     format_brl,
     parse_price_brl,
@@ -39,6 +40,36 @@ USER_SCAN_POLL_SECONDS = int(os.getenv("SKYSCANNER_USER_SCAN_POLL_SECONDS", "60"
 _scan_lock = threading.Lock()
 _scan_last_run_at = None
 _user_scheduler_started = False
+
+AIRPORT_OPTIONS = [
+    ("PVH", "PVH — Porto Velho (RO)"),
+    ("RIO", "RIO — Rio de Janeiro (RJ)"),
+    ("SAO", "SAO — São Paulo (SP)"),
+    ("BSB", "BSB — Brasília (DF)"),
+    ("CGB", "CGB — Cuiabá (MT)"),
+    ("GYN", "GYN — Goiânia (GO)"),
+    ("MCZ", "MCZ — Maceió (AL)"),
+    ("AJU", "AJU — Aracaju (SE)"),
+    ("SSA", "SSA — Salvador (BA)"),
+    ("FOR", "FOR — Fortaleza (CE)"),
+    ("SLZ", "SLZ — São Luís (MA)"),
+    ("CGR", "CGR — Campo Grande (MS)"),
+    ("BHZ", "BHZ — Belo Horizonte (MG)"),
+    ("BEL", "BEL — Belém (PA)"),
+    ("JPA", "JPA — João Pessoa (PB)"),
+    ("CWB", "CWB — Curitiba (PR)"),
+    ("REC", "REC — Recife (PE)"),
+    ("THE", "THE — Teresina (PI)"),
+    ("NAT", "NAT — Natal (RN)"),
+    ("POA", "POA — Porto Alegre (RS)"),
+    ("FLN", "FLN — Florianópolis (SC)"),
+    ("VIX", "VIX — Vitória (ES)"),
+    ("MAO", "MAO — Manaus (AM)"),
+    ("RBR", "RBR — Rio Branco (AC)"),
+    ("BVB", "BVB — Boa Vista (RR)"),
+    ("MCP", "MCP — Macapá (AP)"),
+    ("PMW", "PMW — Palmas (TO)"),
+]
 
 
 def build_full_scan_message(parsed: list[dict], trigger: str = "manual") -> str:
@@ -74,7 +105,7 @@ def build_full_scan_message(parsed: list[dict], trigger: str = "manual") -> str:
     ]
 
     if idas_ok:
-        for i, r in enumerate(idas_ok[:3], start=1):
+        for i, r in enumerate(idas_ok, start=1):
             medal = "🥇 " if i == 1 else ""
             lines.append(_route_line(r, medal))
     else:
@@ -82,7 +113,7 @@ def build_full_scan_message(parsed: list[dict], trigger: str = "manual") -> str:
 
     lines += ["", "VOLTAS (destino -> PVH):"]
     if voltas_ok:
-        for i, r in enumerate(voltas_ok[:3], start=1):
+        for i, r in enumerate(voltas_ok, start=1):
             medal = "🥇 " if i == 1 else ""
             lines.append(_route_line(r, medal))
     else:
@@ -176,7 +207,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None):
 
 def run_full_scan(on_row=None):
     global _scan_last_run_at
-    parsed = run_scan_for_routes(build_queries(), on_row=on_row)
+    parsed = run_scan_for_routes(build_db_queries(get_db_path()), on_row=on_row)
     _scan_last_run_at = datetime.now().isoformat()
     return parsed
 
@@ -213,7 +244,7 @@ def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = Tru
     try:
         routes = _build_user_routes(conn, user_id)
         if not routes:
-            routes = build_queries()
+            routes = build_db_queries(get_db_path())
         parsed = run_scan_for_routes(routes)
         msg = build_full_scan_message(parsed, trigger=trigger)
         if notify:
@@ -229,6 +260,8 @@ def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = Tru
         raise
     finally:
         conn.close()
+
+
 
 
 def _auto_scan_loop():
@@ -247,7 +280,6 @@ def start_auto_scan_if_needed():
         print("[auto-scan] desativado por SKYSCANNER_AUTO_SCAN=0")
         return
 
-    # Evita thread duplicada com reloader do Flask
     is_reloader_main = os.getenv("WERKZEUG_RUN_MAIN") == "true"
     is_debug = os.getenv("FLASK_DEBUG") == "1"
     if is_debug and not is_reloader_main:
@@ -390,12 +422,6 @@ def extract_final_price_source(notes: str | None) -> str:
 
 
 
-def is_skyscanner_blocked(result: FlightResult) -> bool:
-    url = (result.url or "").lower()
-    notes = (result.notes or "").lower()
-    return ("captcha" in url) or ("captcha" in notes) or (result.price is None and "skyscanner" in result.site)
-
-
 def _to_route(query_args) -> RouteQuery:
     origin = query_args.get("origin", CONFIG.get("origin", "PVH")).upper()
     destination = query_args.get("destination", "JPA").upper()
@@ -429,12 +455,12 @@ def app_front():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True, "service": "skyscanner-monitor"})
+    return jsonify({"ok": True, "service": "voobot-monitor"})
 
 
 @app.route("/rotas", methods=["GET"])
 def rotas():
-    routes = build_queries()
+    routes = build_db_queries(get_db_path())
     return jsonify(
         {
             "count": len(routes),
@@ -454,138 +480,6 @@ def rotas():
 
 
 
-def _to_skyscanner_date(date_iso: str) -> str:
-    # 2026-06-04 -> 260604
-    y, m, d = date_iso.split("-")
-    return f"{y[2:]}{m}{d}"
-
-
-def skyscanner_url(route: RouteQuery) -> str:
-    o = route.origin.lower()
-    d = route.destination.lower()
-    out = _to_skyscanner_date(route.outbound_date)
-    if route.inbound_date:
-        inn = _to_skyscanner_date(route.inbound_date)
-        return f"https://www.skyscanner.com.br/transporte/voos/{o}/{d}/{out}/{inn}/?adultsv2=1&cabinclass=economy&currency=BRL&locale=pt-BR"
-    return f"https://www.skyscanner.com.br/transporte/voos/{o}/{d}/{out}/?adultsv2=1&cabinclass=economy&currency=BRL&locale=pt-BR"
-
-
-def search_skyscanner(route: RouteQuery) -> FlightResult:
-    """Tentativa agressiva-controlada para Skyscanner.
-
-    Ordem:
-    1) headless padrão
-    2) não-headless com contexto persistente
-    3) headless com proxy (se SKYSCANNER_PROXY_SERVER estiver definido)
-    """
-    url = skyscanner_url(route)
-    timeout_ms = int(CONFIG.get("timeout_ms", 45000))
-    proxy_server = os.getenv("SKYSCANNER_PROXY_SERVER", "").strip()
-
-    attempts = [
-        {"label": "headless", "headless": True, "persistent": False, "proxy": False},
-        {"label": "headed-persistent", "headless": False, "persistent": True, "proxy": False},
-    ]
-    if proxy_server:
-        attempts.append({"label": "headless-proxy", "headless": True, "persistent": False, "proxy": True})
-
-    errors = []
-
-    for cfg in attempts:
-        try:
-            with sync_playwright() as p:
-                proxy_cfg = {"server": proxy_server} if cfg["proxy"] else None
-
-                if cfg["persistent"]:
-                    user_data_dir = os.getenv("SKYSCANNER_USER_DATA_DIR", "/tmp/skyscanner-profile")
-                    context = p.chromium.launch_persistent_context(
-                        user_data_dir=user_data_dir,
-                        headless=cfg["headless"],
-                        locale="pt-BR",
-                        proxy=proxy_cfg,
-                    )
-                    page = context.new_page()
-                    close_ctx = True
-                    close_browser = False
-                else:
-                    browser = p.chromium.launch(headless=cfg["headless"], proxy=proxy_cfg)
-                    context = browser.new_context(locale="pt-BR")
-                    page = context.new_page()
-                    close_ctx = True
-                    close_browser = True
-
-                page.set_default_timeout(timeout_ms)
-                page.goto(url, wait_until="domcontentloaded")
-                try:
-                    page.wait_for_load_state("networkidle", timeout=12000)
-                except Exception:
-                    pass
-                time.sleep(9)
-
-                # tentativa de interação mínima para reduzir falso bloqueio
-                try:
-                    page.mouse.move(120, 180)
-                    time.sleep(0.8)
-                    page.mouse.wheel(0, 450)
-                    time.sleep(1.2)
-                except Exception:
-                    pass
-
-                price = _extract_price_with_selectors(page, [
-                    '[data-testid*="price"]',
-                    '[class*="Price"]',
-                    '[class*="price"]',
-                    'span:has-text("R$")',
-                    'div:has-text("R$")',
-                ])
-                final_url = page.url
-
-                notes = []
-                if price is None:
-                    notes.append(f"tentativa={cfg['label']}")
-                    notes.append("Preço não identificado automaticamente no Skyscanner")
-                else:
-                    notes.append(f"tentativa={cfg['label']}")
-
-                result = FlightResult(
-                    site="skyscanner",
-                    origin=route.origin,
-                    destination=route.destination,
-                    outbound_date=route.outbound_date,
-                    inbound_date=route.inbound_date,
-                    trip_type=route.trip_type,
-                    price=price,
-                    currency="BRL",
-                    url=final_url,
-                    notes=" | ".join(notes),
-                )
-
-                if close_ctx:
-                    context.close()
-                if close_browser:
-                    browser.close()
-
-                if price is not None and "captcha" not in (final_url or "").lower():
-                    return result
-
-                errors.append(f"{cfg['label']}: bloqueado/sem preço")
-        except Exception as e:
-            errors.append(f"{cfg['label']}: {e}")
-
-    return FlightResult(
-        site="skyscanner",
-        origin=route.origin,
-        destination=route.destination,
-        outbound_date=route.outbound_date,
-        inbound_date=route.inbound_date,
-        trip_type=route.trip_type,
-        price=None,
-        currency="BRL",
-        url=url,
-        notes="erro Skyscanner: " + " || ".join(errors),
-    )
-
-
 @app.route("/consulta", methods=["GET"])
 def consulta():
     try:
@@ -595,24 +489,11 @@ def consulta():
 
     db = Database(get_db_path())
 
-    fonte = request.args.get("fonte", default="google", type=str).lower().strip()
-
-    if fonte == "skyscanner":
-        result = search_skyscanner(route)
-        if is_skyscanner_blocked(result):
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=bool(CONFIG.get("headless", True)))
-                scraper = GoogleFlightsScraper(browser)
-                fallback = scraper.search(route)
-                browser.close()
-            fallback.notes = (fallback.notes + " | " if fallback.notes else "") + "fallback: skyscanner bloqueado por captcha"
-            result = fallback
-    else:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=bool(CONFIG.get("headless", True)))
-            scraper = GoogleFlightsScraper(browser)
-            result = scraper.search(route)
-            browser.close()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=bool(CONFIG.get("headless", True)))
+        scraper = GoogleFlightsScraper(browser)
+        result = scraper.search(route)
+        browser.close()
 
     min_price, avg_price, last_price = db.stats_for(route)
     band = classify_price(result.price, min_price, avg_price)
@@ -627,12 +508,12 @@ def consulta():
         resumo = (
             "────────── ✈️ CONSULTA RÁPIDA ✈️ ──────────\n"
             f"Rota: {route.origin} → {route.destination}\n"
-            f"Data: {route.outbound_date}"
+            f"Data: {route.outbound_date}\n"
             + (f" / {route.inbound_date}" if route.inbound_date else "")
             + "\n"
             + f"Preço: {format_brl(result.price)}\n"
             + f"Classificação: {band}\n"
-            + f"Fonte: {result.site}"
+            + f"Fonte: {result.site}\n"
             + vendor_line
         )
         send_telegram_message(resumo)
@@ -669,22 +550,10 @@ def consulta():
     )
 
 
-
-
-
-
 @app.route("/consulta-maxmilhas", methods=["GET"])
 def consulta_maxmilhas():
     args = request.args.to_dict(flat=True)
     args["fonte"] = "maxmilhas"
-    with app.test_request_context(query_string=args):
-        return consulta()
-
-
-@app.route("/consulta-skyscanner", methods=["GET"])
-def consulta_skyscanner():
-    args = request.args.to_dict(flat=True)
-    args["fonte"] = "skyscanner"
     with app.test_request_context(query_string=args):
         return consulta()
 
@@ -727,7 +596,7 @@ def cron():
 @app.route("/cron-stream", methods=["GET"])
 def cron_stream():
     def event_stream():
-        routes = build_queries()
+        routes = build_db_queries(get_db_path())
         total = len(routes)
         yield f"data: {json.dumps({'type': 'start', 'total': total})}\n\n"
 
@@ -837,7 +706,7 @@ def _ensure_user_routes_defaults(conn, user_id: int) -> None:
     if exists:
         return
     now = _current_iso_ts()
-    for route in build_queries():
+    for route in build_config_queries():
         conn.execute("INSERT INTO user_routes (user_id, origin, destination, outbound_date, inbound_date, active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
             (user_id, route.origin, route.destination, route.outbound_date, route.inbound_date or "", now),
         )
@@ -1015,7 +884,7 @@ def auth_register():
         <head>
           <meta charset='utf-8'>
           <meta name='viewport' content='width=device-width, initial-scale=1'>
-          <title>Cadastro | Skyscanner Admin</title>
+          <title>Cadastro | VooBot Admin</title>
           <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css' rel='stylesheet'>
         </head>
         <body class='bg-light d-flex align-items-center' style='min-height:100vh;'>
@@ -1065,7 +934,7 @@ def auth_login():
         <head>
           <meta charset='utf-8'>
           <meta name='viewport' content='width=device-width, initial-scale=1'>
-          <title>Login | Skyscanner Admin</title>
+          <title>Login | VooBot Admin</title>
           <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css' rel='stylesheet'>
         </head>
         <body class='bg-light d-flex align-items-center' style='min-height:100vh;'>
@@ -1073,7 +942,7 @@ def auth_login():
             <div class='row justify-content-center'>
               <div class='col-md-5'>
                 <div class='card shadow-sm'>
-                  <div class='card-header bg-dark text-white'>Skyscanner Admin</div>
+                  <div class='card-header bg-dark text-white'>VooBot Admin</div>
                   <div class='card-body'>
                     <form method='post'>
                       <div class='mb-3'><input class='form-control' name='email' type='email' placeholder='Email' required></div>
@@ -1130,7 +999,7 @@ def painel():
         <head>
           <meta charset='utf-8'>
           <meta name='viewport' content='width=device-width, initial-scale=1'>
-          <title>Painel Admin | Skyscanner</title>
+          <title>Painel Admin | VooBot</title>
           <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css' rel='stylesheet'>
           <link href='https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css' rel='stylesheet'>
           <style>
@@ -1154,7 +1023,7 @@ def painel():
           <div class='container-fluid'>
             <div class='row'>
               <aside class='col-md-3 col-lg-2 p-0 sidebar'>
-                <div class='brand'><i class='bi bi-activity'></i> Skyscanner Admin</div>
+                <div class='brand'><i class='bi bi-activity'></i> VooBot Admin</div>
                 <a href='#rotas'><i class='bi bi-signpost-split me-2'></i>Rotas</a>
                 <a href='#consultas'><i class='bi bi-window me-2'></i>Consultas</a>
                 <a href='#telegram'><i class='bi bi-telegram me-2'></i>Telegram</a>
@@ -1180,12 +1049,34 @@ def painel():
                 <div class='card mb-3 shadow-sm dashboard-section' id='rotas'>
                   <div class='card-header'><i class='bi bi-signpost-split me-2'></i>Rotas configuradas</div>
                   <div class='card-body'>
-                    <form method='post' action='{{ url_for("add_route") }}' class='row g-2 mb-3'>
-                      <div class='col-md-2'><input class='form-control' name='origin' placeholder='Origem' required></div>
-                      <div class='col-md-2'><input class='form-control' name='destination' placeholder='Destino' required></div>
-                      <div class='col-md-3'><input class='form-control' name='outbound_date' type='date' required></div>
-                      <div class='col-md-3'><input class='form-control' name='inbound_date' type='date'></div>
-                      <div class='col-md-2 d-grid'><button class='btn btn-primary' type='submit'>Adicionar</button></div>
+                    <form method='post' action='{{ url_for("add_route") }}' class='row g-2 mb-3 align-items-end'>
+                      <div class='col-md-2'>
+                        <label class='form-label small text-uppercase mb-1'>Origem</label>
+                        <select class='form-select form-select-sm' name='origin' required>
+                          {% for code, label in airport_options %}
+                            <option value='{{ code }}' {% if code == 'PVH' %}selected{% endif %}>{{ label }}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class='col-md-2'>
+                        <label class='form-label small text-uppercase mb-1'>Destino</label>
+                        <select class='form-select form-select-sm' name='destination' required>
+                          {% for code, label in airport_options %}
+                            <option value='{{ code }}' {% if code == 'JPA' %}selected{% endif %}>{{ label }}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label small text-uppercase mb-1'>Ida</label>
+                        <input class='form-control form-control-sm' name='outbound_date' type='date' required>
+                      </div>
+                      <div class='col-md-3'>
+                        <label class='form-label small text-uppercase mb-1'>Volta</label>
+                        <input class='form-control form-control-sm' name='inbound_date' type='date'>
+                      </div>
+                      <div class='col-md-2 d-grid'>
+                        <button class='btn btn-primary btn-sm' type='submit'>Adicionar</button>
+                      </div>
                     </form>
                     <div class='small text-muted mb-3'>As datas padrão globais de ida foram reduzidas para 04 e 05 de junho.</div>
                     <div class='table-responsive border rounded'>
@@ -1203,8 +1094,20 @@ def painel():
                           {% for r in routes %}
                             <tr>
                               <form method='post' action='{{ url_for("update_route", route_id=r["id"]) }}'>
-                                <td><input class='form-control form-control-sm' name='origin' value='{{r["origin"]}}' required></td>
-                                <td><input class='form-control form-control-sm' name='destination' value='{{r["destination"]}}' required></td>
+                                <td>
+                                  <select class='form-select form-select-sm' name='origin' required>
+                                    {% for code, label in airport_options %}
+                                      <option value='{{ code }}' {% if code == (r["origin"] or "").upper() %}selected{% endif %}>{{ label }}</option>
+                                    {% endfor %}
+                                  </select>
+                                </td>
+                                <td>
+                                  <select class='form-select form-select-sm' name='destination' required>
+                                    {% for code, label in airport_options %}
+                                      <option value='{{ code }}' {% if code == (r["destination"] or "").upper() %}selected{% endif %}>{{ label }}</option>
+                                    {% endfor %}
+                                  </select>
+                                </td>
                                 <td><input class='form-control form-control-sm' name='outbound_date' type='date' value='{{r["outbound_date"]}}' required></td>
                                 <td><input class='form-control form-control-sm' name='inbound_date' type='date' value='{{r["inbound_date"] if r["inbound_date"] else ""}}'></td>
                                 <td class='text-end text-nowrap'>
@@ -1306,13 +1209,6 @@ def painel():
                         <div class='col-md-2'>
                           <label class='form-label small text-uppercase'>Volta</label>
                           <input id='inbound_date' type='date' class='form-control form-control-sm' value='' />
-                        </div>
-                        <div class='col-md-2'>
-                          <label class='form-label small text-uppercase'>Fonte</label>
-                          <select id='fonte' class='form-select form-select-sm'>
-                            <option value='google' selected>Google Flights</option>
-                            <option value='skyscanner'>Skyscanner</option>
-                          </select>
                         </div>
                         <div class='col-12 col-md-1 d-grid'>
                           <button id='btn-consultar' class='btn btn-primary btn-sm' onclick='consultar()'>Consultar</button>
@@ -1516,6 +1412,7 @@ def painel():
         last_run=last_run,
         default_tg_bot=default_tg_bot,
         default_tg_chat=default_tg_chat,
+        airport_options=AIRPORT_OPTIONS,
     )
 
 
