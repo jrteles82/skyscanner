@@ -90,7 +90,6 @@ def build_full_scan_message(parsed: list[dict], trigger: str = "manual") -> str:
             "────────── ✈️ CONSULTA COMPLETA ✈️ ──────────\n"
             "Sem dados nesta execução."
         )
-
     idas = [r for r in parsed if str(r.get("origin", "")).upper() == "PVH" and str(r.get("destination", "")).upper() != "PVH"]
     voltas = [r for r in parsed if str(r.get("destination", "")).upper() == "PVH"]
 
