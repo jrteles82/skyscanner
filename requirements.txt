@@ -2,3 +2,4 @@ flask>=3.0,<4
 requests>=2.31,<3
 playwright>=1.52,<2
 gunicorn>=20.1.0,<21
+setuptools>=80.0.0
