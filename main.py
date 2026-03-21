@@ -373,7 +373,8 @@ def start_user_scan_scheduler_if_needed():
 
 
 def get_db_path() -> str:
-    configured = str(CONFIG.get("db_path", "flight_tracker_browser.db"))
+    env_path = os.getenv("SKYSCANNER_DB_PATH")
+    configured = str(env_path or CONFIG.get("db_path", "flight_tracker_browser.db"))
     # Em Vercel/Lambda, /var/task é read-only; use /tmp (gravável)
     if os.getenv("VERCEL") or configured.startswith("/var/task"):
         return "/tmp/flight_tracker_browser.db"

@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: voo-bot-monitor
+    env: python
+    plan: free
+    branch: main
+    disk:
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: FLASK_DEBUG
+        value: "0"
+      - key: SKYSCANNER_USER_DATA_DIR
+        value: /opt/render/project/src/data/playwright-profile
+      - key: SKYSCANNER_DB_PATH
+        value: /opt/render/project/src/data/flight_tracker_browser.db
+      - key: SKYSCANNER_AUTO_SCAN
+        value: "1"
+cronJobs:
+  - name: cron-full-scan
+    schedule: "*/30 * * * *"
+    command: "curl --fail https://<your-render-subdomain>.onrender.com/painel/cron"  # troque pela URL real do serviço
