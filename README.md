@@ -64,8 +64,8 @@ O repositório já traz `render.deploy.sh`, `render.yaml` e `Procfile`. O fluxo 
 ## 3. Recomendações adicionais
 
 * Nunca comite o `.env`, o banco ou o perfil do Playwright (já estão no `.gitignore`).
-* Para recriar o banco agora que ele foi removido, apenas rode `./render.deploy.sh` ou o bloco de `sqlite3` acima — ele cria a estrutura automaticamente.
+* Para recriar o banco agora que ele foi removido, apenas rode `./render.deploy.sh` ou o bloco de `sqlite3` acima — ele cria a estrutura automaticamente. Há também o `LOCAL_SETUP_NOTE.md` com um checklist completo para restaurar os artefatos locais em qualquer máquina.
 * Caso precise de um deploy diferente (Fly.io, Railway), garanta que `SKYSCANNER_DB_PATH` e `SKYSCANNER_USER_DATA_DIR` apontem para um volume persistente disponível naquele ambiente.
-* O `render.deploy.sh` serve tanto pra preparar o Render quanto pra gerar o banco e cache local durante testes. Basta rodá-lo sempre que trocar de máquina ou limpar o diretório `data/`.
+* O `render.deploy.sh` serve tanto pra preparar o Render quanto pra gerar o banco e cache local durante testes. Basta rodá-lo sempre que trocar de máquina ou limpar o diretório `data/` — os arquivos criados nunca precisam entrar no Git, pois estão no `.gitignore`.
 
 Quer que eu gere também um `.env.example` com essas variáveis para facilitar o onboarding?
