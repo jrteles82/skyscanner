@@ -853,6 +853,10 @@ def login_required(fn):
     def wrapper(*args, **kwargs):
         if not session.get("user_id"):
             return redirect(url_for("auth_login"))
+        user = current_user()
+        if user is None:
+            session.clear()
+            return redirect(url_for("auth_login"))
         return fn(*args, **kwargs)
 
     return wrapper
@@ -863,7 +867,10 @@ def current_user():
     if not uid:
         return None
     db = get_auth_db()
-    return db.execute("SELECT id, email FROM users WHERE id = ?", (uid,)).fetchone()
+    user = db.execute("SELECT id, email FROM users WHERE id = ?", (uid,)).fetchone()
+    if user is None:
+        session.pop("user_id", None)
+    return user
 
 
 @app.route("/auth/register", methods=["GET", "POST"])
@@ -983,6 +990,9 @@ def auth_logout():
 def painel():
     db = get_auth_db()
     user = current_user()
+    if user is None:
+        session.clear()
+        return redirect(url_for("auth_login"))
     ensure_user_defaults(db, user["id"])
     routes = db.execute(
         "SELECT id, origin, destination, outbound_date, inbound_date, active FROM user_routes WHERE user_id = ? ORDER BY id DESC",
