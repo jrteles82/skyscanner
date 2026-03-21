@@ -49,7 +49,7 @@ O repositório já traz `render.deploy.sh`, `render.yaml` e `Procfile`. O fluxo 
    * diretórios `data/`, perfil do Playwright e `SKYSCANNER_DB_PATH` criados;
    * dependências `pip install -r requirements.txt` + `python3 -m playwright install chromium` instaladas;
    * banco SQLite inicializado e pronto (reexecutar o script sempre que recriar o data volume).
-2. Fazer deploy no Render com `render.yaml` (serviço `web` + disco persistente + cron) e `Procfile` com `gunicorn main:app --bind 0.0.0.0:$PORT`.
+2. Fazer deploy no Render com `render.yaml` (serviço `web` + disco persistente + cron) e `Procfile` com `gunicorn main:app --bind 0.0.0.0:$PORT --timeout 180`.
 3. Definir variáveis de ambiente no painel do Render (ou via `render.yaml`):
    ```yaml
    PYTHON_VERSION: "3.12.8"
@@ -66,6 +66,8 @@ O repositório já traz `render.deploy.sh`, `render.yaml` e `Procfile`. O fluxo 
 Se o serviço subir com Python `3.14` e aparecer erro de `pkg_resources`, troque o runtime para `3.12.8` no Render e garanta que o Start Command seja `gunicorn main:app --bind 0.0.0.0:$PORT` em vez de `gunicorn your_application.wsgi`.
 
 Se aparecer erro do Playwright dizendo que o executável do Chromium não existe, o build do serviço precisa instalar os browsers com `PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers python3 -m playwright install chromium`.
+
+Se o Render encerrar o worker com `WORKER TIMEOUT` durante `/consulta`, aumente o Start Command para `gunicorn main:app --bind 0.0.0.0:$PORT --timeout 180`, porque a consulta usa Playwright e pode levar bem mais que o timeout padrão do Gunicorn.
 
 ## 3. Recomendações adicionais
 

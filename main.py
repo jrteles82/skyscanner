@@ -41,6 +41,7 @@ _scan_lock = threading.Lock()
 _scan_last_run_at = None
 _user_scheduler_started = False
 _auth_tables_initialized = False
+_user_scan_jobs: set[int] = set()
 
 AIRPORT_OPTIONS = [
     ("PVH", "PVH — Porto Velho (RO)"),
@@ -252,10 +253,13 @@ def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = Tru
         if not routes:
             routes = build_db_queries(get_db_path())
         parsed = run_scan_for_routes(routes)
+        total_ok = len([r for r in parsed if r.get("price") is not None])
         msg = build_full_scan_message(parsed, trigger=trigger)
         if notify:
-            send_user_telegram_message(user_id, msg)
-        total_ok = len([r for r in parsed if r.get("price") is not None])
+            if total_ok > 0:
+                send_user_telegram_message(user_id, msg)
+            else:
+                send_user_telegram_message(user_id, f"Nenhum preço válido encontrado na execução: {trigger}.")
         summary = f"ok: {total_ok}/{len(parsed)} com preço"
         _finish_user_run(conn, run_id, "ok", summary)
         if trigger.startswith("agendada"):
@@ -266,6 +270,24 @@ def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = Tru
         raise
     finally:
         conn.close()
+
+
+def start_user_scan_async(user_id: int, trigger: str = "manual-user", notify: bool = True) -> bool:
+    if user_id in _user_scan_jobs:
+        return False
+
+    _user_scan_jobs.add(user_id)
+
+    def _job():
+        try:
+            run_user_scan(user_id, trigger=trigger, notify=notify)
+        except Exception as exc:
+            print(f"[user-scan] erro para user_id={user_id}: {exc}")
+        finally:
+            _user_scan_jobs.discard(user_id)
+
+    threading.Thread(target=_job, daemon=True).start()
+    return True
 
 
 
@@ -1014,6 +1036,8 @@ def painel():
         elif cron["every_hours"] is not None:
             cron_minutes = max(1, int(cron["every_hours"]) * 60)
     last_run = db.execute("SELECT started_at, finished_at, status, summary FROM user_runs WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user["id"],)).fetchone()
+    run_now_status = request.args.get("run_now_status", "").strip()
+    is_running_now = int(user["id"]) in _user_scan_jobs
     default_tg_bot = os.getenv("TELEGRAM_BOT_TOKEN") or CONFIG.get("telegram_bot_token", "")
     default_tg_chat = os.getenv("TELEGRAM_CHAT_ID") or CONFIG.get("telegram_chat_id", "")
 
@@ -1070,6 +1094,11 @@ def painel():
                   <div class='col-md-4'><div class='card kpi'><div class='card-body'><div class='text-muted'>Cron</div><div class='h6 mb-0'>{% if not cron or cron['enabled'] %}Ativo{% else %}Inativo{% endif %} ({{ cron_minutes }} min)</div></div></div></div>
                   <div class='col-md-4'><div class='card kpi'><div class='card-body'><div class='text-muted'>Última execução</div><div class='small mb-0'>{% if last_run %}{{last_run['status']}}{% else %}sem execução{% endif %}</div></div></div></div>
                 </div>
+                {% if run_now_status == 'started' %}
+                <div class='alert alert-info'>Busca completa iniciada em segundo plano. Atualize o painel em alguns instantes para ver o resultado.</div>
+                {% elif run_now_status == 'already-running' %}
+                <div class='alert alert-warning'>Já existe uma busca completa em andamento para este usuário.</div>
+                {% endif %}
 
                 <div class='card mb-3 shadow-sm dashboard-section' id='rotas'>
                   <div class='card-header'><i class='bi bi-signpost-split me-2'></i>Rotas configuradas</div>
@@ -1370,7 +1399,7 @@ def painel():
                       <div class='col-md-2 d-grid'><button class='btn btn-primary' type='submit'>Salvar</button></div>
                     </form>
                     <form method='post' action='{{ url_for("run_now_user") }}' class='mt-3'>
-                      <button class='btn btn-warning' type='submit'>Executar agora</button>
+                      <button class='btn btn-warning' type='submit' {% if is_running_now %}disabled{% endif %}>{% if is_running_now %}Executando...{% else %}Executar agora{% endif %}</button>
                     </form>
                     <div class='mt-3'><strong>Última execução:</strong><br>
                       {% if last_run %}
@@ -1523,8 +1552,12 @@ def save_telegram():
 @login_required
 def run_now_user():
     user = current_user()
-    run_user_scan(int(user["id"]), trigger="painel-manual", notify=True)
-    return redirect(url_for("painel", _anchor="cron"))
+    if user is None:
+        session.clear()
+        return redirect(url_for("auth_login"))
+    started = start_user_scan_async(int(user["id"]), trigger="painel-manual", notify=True)
+    status = "started" if started else "already-running"
+    return redirect(url_for("painel", _anchor="cron", run_now_status=status))
 
 
 @app.route("/painel/cron", methods=["POST"])

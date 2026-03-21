@@ -8,7 +8,7 @@ services:
       mountPath: /opt/render/project/src/data
       sizeGB: 1
     buildCommand: PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers python3 -m playwright install chromium
-    startCommand: gunicorn main:app --bind 0.0.0.0:$PORT
+    startCommand: gunicorn main:app --bind 0.0.0.0:$PORT --timeout 180
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8

@@ -14,7 +14,7 @@ Este projeto já inclui os artefatos principais para rodar no Render:
 
 2. **Crie o serviço no Render**
    * Conecte o GitHub/GitLab e escolha a branch principal (`main`).
-   * Runtime: `python` com `PYTHON_VERSION=3.12.8`, Build Command: `PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers python3 -m playwright install chromium`, Start Command: `gunicorn main:app --bind 0.0.0.0:$PORT`.
+   * Runtime: `python` com `PYTHON_VERSION=3.12.8`, Build Command: `PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers python3 -m playwright install chromium`, Start Command: `gunicorn main:app --bind 0.0.0.0:$PORT --timeout 180`.
    * Buckets e datas persistem em disco montado: mantenha o diretório `data/` dentro do repo (ou use `render.yaml` para montar `disk` em `/opt/render/project/src/data`).
 
 3. **Variáveis de ambiente essenciais**
@@ -50,6 +50,14 @@ Se o log mostrar `Executable doesn't exist` para `chrome-headless-shell`, o paco
 * definir `PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers`;
 * instalar no build com `python3 -m playwright install chromium`;
 * fazer novo deploy para reconstruir a imagem do serviço.
+
+## Erro comum: `WORKER TIMEOUT`
+
+Se o log mostrar `WORKER TIMEOUT` em `/consulta`, o Gunicorn matou o worker antes do Playwright terminar. Neste projeto, a correção é:
+
+* usar `gunicorn main:app --bind 0.0.0.0:$PORT --timeout 180`;
+* redeployar o serviço com esse Start Command;
+* considerar reduzir `settle_seconds` no futuro se quiser consultas mais curtas.
 
 ## Extras
 
