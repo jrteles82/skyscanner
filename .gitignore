@@ -1,1 +1,33 @@
 .vercel
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+
+# Playwright cache
+.playwright-browsers/
+.playwright/
+
+# Local data and databases
+data/
+flight_tracker_browser.db
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# Environment files
+.env
+*.env
+
+# Node modules (if any frontend tooling is added)
+node_modules/
+
+# IDE/editor settings
+.vscode/
+.idea/
