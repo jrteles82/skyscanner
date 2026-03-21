@@ -40,6 +40,7 @@ USER_SCAN_POLL_SECONDS = int(os.getenv("SKYSCANNER_USER_SCAN_POLL_SECONDS", "60"
 _scan_lock = threading.Lock()
 _scan_last_run_at = None
 _user_scheduler_started = False
+_auth_tables_initialized = False
 
 AIRPORT_OPTIONS = [
     ("PVH", "PVH — Porto Velho (RO)"),
@@ -691,6 +692,9 @@ def auth_db_path() -> str:
 
 
 def get_auth_db():
+    global _auth_tables_initialized
+    if not _auth_tables_initialized:
+        init_auth_tables()
     if "auth_db" not in g:
         conn = sqlite3.connect(auth_db_path())
         conn.row_factory = sqlite3.Row
@@ -748,6 +752,7 @@ def ensure_user_defaults(conn, user_id: int) -> None:
 
 
 def init_auth_tables():
+    global _auth_tables_initialized
     db = sqlite3.connect(auth_db_path())
     cur = db.cursor()
     cur.execute(
@@ -830,6 +835,10 @@ def init_auth_tables():
 
     db.commit()
     db.close()
+    _auth_tables_initialized = True
+
+
+init_auth_tables()
 
 
 @app.teardown_appcontext
