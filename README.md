@@ -52,6 +52,7 @@ O repositório já traz `render.deploy.sh`, `render.yaml` e `Procfile`. O fluxo 
 2. Fazer deploy no Render com `render.yaml` (serviço `web` + disco persistente + cron) e `Procfile` com `gunicorn main:app --bind 0.0.0.0:$PORT`.
 3. Definir variáveis de ambiente no painel do Render (ou via `render.yaml`):
    ```yaml
+   PYTHON_VERSION: "3.12.8"
    FLASK_DEBUG: "0"
    SKYSCANNER_DB_PATH: /opt/render/project/src/data/flight_tracker_browser.db
    SKYSCANNER_USER_DATA_DIR: /opt/render/project/src/data/playwright-profile
@@ -60,6 +61,8 @@ O repositório já traz `render.deploy.sh`, `render.yaml` e `Procfile`. O fluxo 
    TELEGRAM_CHAT_ID: ...
    ```
 4. Ajustar o cron `render.yaml` (ou criar job separado) para disparar `/painel/cron` e manter os dados frescos.
+
+Se o serviço subir com Python `3.14` e aparecer erro de `pkg_resources`, troque o runtime para `3.12.8` no Render e garanta que o Start Command seja `gunicorn main:app --bind 0.0.0.0:$PORT` em vez de `gunicorn your_application.wsgi`.
 
 ## 3. Recomendações adicionais
 
