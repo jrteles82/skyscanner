@@ -14,11 +14,12 @@ Este projeto já inclui os artefatos principais para rodar no Render:
 
 2. **Crie o serviço no Render**
    * Conecte o GitHub/GitLab e escolha a branch principal (`main`).
-   * Runtime: `python` com `PYTHON_VERSION=3.12.8`, Build Command: `pip install -r requirements.txt`, Start Command: `gunicorn main:app --bind 0.0.0.0:$PORT`.
+   * Runtime: `python` com `PYTHON_VERSION=3.12.8`, Build Command: `PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers python3 -m playwright install chromium`, Start Command: `gunicorn main:app --bind 0.0.0.0:$PORT`.
    * Buckets e datas persistem em disco montado: mantenha o diretório `data/` dentro do repo (ou use `render.yaml` para montar `disk` em `/opt/render/project/src/data`).
 
 3. **Variáveis de ambiente essenciais**
    * `PYTHON_VERSION=3.12.8`
+   * `PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers`
    * `FLASK_DEBUG=0`
    * `SKYSCANNER_DB_PATH=/opt/render/project/src/data/flight_tracker_browser.db`
    * `SKYSCANNER_USER_DATA_DIR=/opt/render/project/src/data/playwright-profile`
@@ -41,6 +42,14 @@ Se o log mostrar algo como `ModuleNotFoundError: No module named 'pkg_resources'
 * usar `gunicorn main:app --bind 0.0.0.0:$PORT`;
 * fixar `PYTHON_VERSION=3.12.8`;
 * redeployar para reinstalar as dependências nesse runtime.
+
+## Erro comum: Playwright sem Chromium
+
+Se o log mostrar `Executable doesn't exist` para `chrome-headless-shell`, o pacote Python do Playwright foi instalado, mas os browsers não. Neste projeto, a correção é:
+
+* definir `PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers`;
+* instalar no build com `python3 -m playwright install chromium`;
+* fazer novo deploy para reconstruir a imagem do serviço.
 
 ## Extras
 
