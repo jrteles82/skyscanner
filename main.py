@@ -158,6 +158,12 @@ def _build_user_routes(conn, user_id: int) -> list[RouteQuery]:
     return routes
 
 
+def _ensure_parent_dir(file_path: str) -> str:
+    path = Path(file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 def run_scan_for_routes(routes: list[RouteQuery], on_row=None):
     db = Database(get_db_path())
     parsed = []
@@ -377,8 +383,8 @@ def get_db_path() -> str:
     configured = str(env_path or CONFIG.get("db_path", "flight_tracker_browser.db"))
     # Em Vercel/Lambda, /var/task é read-only; use /tmp (gravável)
     if os.getenv("VERCEL") or configured.startswith("/var/task"):
-        return "/tmp/flight_tracker_browser.db"
-    return configured
+        configured = "/tmp/flight_tracker_browser.db"
+    return _ensure_parent_dir(configured)
 
 
 def send_telegram_message_to(text: str, token: str | None = None, chat_id: str | None = None) -> None:
