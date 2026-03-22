@@ -246,6 +246,7 @@ def _touch_user_cron_run(conn, user_id: int) -> None:
 
 
 def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = True):
+    started_at = time.monotonic()
     conn = sqlite3.connect(auth_db_path())
     conn.row_factory = sqlite3.Row
     run_id = _create_user_run(conn, user_id, trigger=trigger)
@@ -253,6 +254,7 @@ def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = Tru
         routes = _build_user_routes(conn, user_id)
         if not routes:
             routes = build_db_queries(get_db_path())
+        print(f"[user-scan] inicio user_id={user_id} trigger={trigger} routes={len(routes)} notify={int(notify)}")
         parsed = run_scan_for_routes(routes)
         total_ok = len([r for r in parsed if r.get("price") is not None])
         msg = build_full_scan_message(parsed, trigger=trigger)
@@ -263,11 +265,15 @@ def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = Tru
                 send_user_telegram_message(user_id, f"Nenhum preço válido encontrado na execução: {trigger}.")
         summary = f"ok: {total_ok}/{len(parsed)} com preço"
         _finish_user_run(conn, run_id, "ok", summary)
+        duration_s = round(time.monotonic() - started_at, 1)
+        print(f"[user-scan] fim user_id={user_id} trigger={trigger} duration_s={duration_s} summary='{summary}'")
         if trigger.startswith("agendada"):
             _touch_user_cron_run(conn, user_id)
         return {"status": "ok", "summary": summary, "parsed": parsed}
     except Exception as e:
         _finish_user_run(conn, run_id, "error", str(e)[:500])
+        duration_s = round(time.monotonic() - started_at, 1)
+        print(f"[user-scan] erro user_id={user_id} trigger={trigger} duration_s={duration_s} error={e}")
         raise
     finally:
         conn.close()
@@ -275,9 +281,11 @@ def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = Tru
 
 def start_user_scan_async(user_id: int, trigger: str = "manual-user", notify: bool = True) -> bool:
     if user_id in _user_scan_jobs:
+        print(f"[user-scan] ignorado user_id={user_id} trigger={trigger} motivo=already-running")
         return False
 
     _user_scan_jobs.add(user_id)
+    print(f"[user-scan] agendado user_id={user_id} trigger={trigger}")
 
     def _job():
         try:
@@ -294,18 +302,25 @@ def start_user_scan_async(user_id: int, trigger: str = "manual-user", notify: bo
 def start_full_scan_async(trigger: str = "manual", notify: bool = True) -> bool:
     global _global_scan_running
     if _global_scan_running:
+        print(f"[full-scan] ignorado trigger={trigger} motivo=already-running")
         return False
 
     _global_scan_running = True
+    print(f"[full-scan] agendado trigger={trigger}")
 
     def _job():
         global _global_scan_running
+        started_at = time.monotonic()
         try:
             parsed = run_full_scan()
+            total_ok = len([r for r in parsed if r.get("price") is not None])
             if notify:
                 notify_full_scan(parsed, trigger=trigger)
+            duration_s = round(time.monotonic() - started_at, 1)
+            print(f"[full-scan] fim trigger={trigger} duration_s={duration_s} total={len(parsed)} total_ok={total_ok}")
         except Exception as exc:
-            print(f"[full-scan] erro trigger={trigger}: {exc}")
+            duration_s = round(time.monotonic() - started_at, 1)
+            print(f"[full-scan] erro trigger={trigger} duration_s={duration_s} error={exc}")
         finally:
             _global_scan_running = False
 
@@ -1625,7 +1640,9 @@ def cronjobs_run():
     if not _cron_token_is_valid():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
 
-    full_scan_started = start_full_scan_async(trigger="cronjobs", notify=True)
+    print("[cronjobs] requisicao recebida")
+
+    full_scan_started = start_full_scan_async(trigger="cronjobs", notify=False)
 
     conn = sqlite3.connect(auth_db_path())
     conn.row_factory = sqlite3.Row
@@ -1649,6 +1666,11 @@ def cronjobs_run():
             started_users += 1
         else:
             already_running_users += 1
+
+    print(
+        f"[cronjobs] dispatch full_scan_started={int(full_scan_started)} "
+        f"users_started={started_users} users_already_running={already_running_users}"
+    )
 
     return jsonify(
         {
