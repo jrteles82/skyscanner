@@ -42,6 +42,7 @@ _scan_last_run_at = None
 _user_scheduler_started = False
 _auth_tables_initialized = False
 _user_scan_jobs: set[int] = set()
+_global_scan_running = False
 
 AIRPORT_OPTIONS = [
     ("PVH", "PVH — Porto Velho (RO)"),
@@ -288,6 +289,40 @@ def start_user_scan_async(user_id: int, trigger: str = "manual-user", notify: bo
 
     threading.Thread(target=_job, daemon=True).start()
     return True
+
+
+def start_full_scan_async(trigger: str = "manual", notify: bool = True) -> bool:
+    global _global_scan_running
+    if _global_scan_running:
+        return False
+
+    _global_scan_running = True
+
+    def _job():
+        global _global_scan_running
+        try:
+            parsed = run_full_scan()
+            if notify:
+                notify_full_scan(parsed, trigger=trigger)
+        except Exception as exc:
+            print(f"[full-scan] erro trigger={trigger}: {exc}")
+        finally:
+            _global_scan_running = False
+
+    threading.Thread(target=_job, daemon=True).start()
+    return True
+
+
+def _cron_token_is_valid() -> bool:
+    expected = (os.getenv("CRON_SECRET") or "").strip()
+    if not expected:
+        return False
+    provided = (
+        request.headers.get("X-Cron-Secret", "").strip()
+        or request.args.get("token", "").strip()
+        or request.form.get("token", "").strip()
+    )
+    return provided == expected
 
 
 
@@ -1583,6 +1618,46 @@ def save_cron():
     )
     db.commit()
     return redirect(url_for("painel", _anchor="cron"))
+
+
+@app.route("/cronjobs/run", methods=["GET", "POST"])
+def cronjobs_run():
+    if not _cron_token_is_valid():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    full_scan_started = start_full_scan_async(trigger="cronjobs", notify=True)
+
+    conn = sqlite3.connect(auth_db_path())
+    conn.row_factory = sqlite3.Row
+    try:
+        users = conn.execute(
+            """
+            SELECT u.id AS user_id
+            FROM users u
+            LEFT JOIN user_cron c ON c.user_id = u.id
+            WHERE COALESCE(c.enabled, 1) = 1
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    started_users = 0
+    already_running_users = 0
+    for row in users:
+        started = start_user_scan_async(int(row["user_id"]), trigger="cronjobs-usuario", notify=True)
+        if started:
+            started_users += 1
+        else:
+            already_running_users += 1
+
+    return jsonify(
+        {
+            "ok": True,
+            "full_scan_started": full_scan_started,
+            "users_started": started_users,
+            "users_already_running": already_running_users,
+        }
+    )
 
 
 if __name__ == "__main__":

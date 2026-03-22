@@ -27,9 +27,11 @@ Este projeto já inclui os artefatos principais para rodar no Render:
    * `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID` (opcionalmente também no painel de usuários)
    * `SKYSCANNER_FULL_SCAN_EVERY_SECONDS` e `SKYSCANNER_USER_SCAN_POLL_SECONDS` podem ser ajustados conforme a frequência desejada.
 
-4. **Crie o cron job** (Render faz isso direta ou via `render.yaml`)
-   * Exemplo: `curl --fail https://<seu-app>.onrender.com/painel/cron`
-   * Ajuste o agendamento (`*/30 * * * *` foi usado no arquivo) e substitua `<seu-app>` pela URL real. Você também pode expor uma rota interna (`/painel/cron`) protegida e chamar via `render.yaml` ou um job separado.
+4. **Crie o cron job externo** (Cron-Job.org, Cronjobs ou similar)
+   * Defina `CRON_SECRET` no serviço.
+   * URL de exemplo: `https://<seu-app>.onrender.com/cronjobs/run?token=<CRON_SECRET>`
+   * Método: `GET` (ou `POST` com header `X-Cron-Secret`).
+   * Ajuste o agendamento conforme desejar, por exemplo a cada 30 minutos.
 
 5. **Persistência de dados**
    * Render monta o disco só na pasta indicada. O `data` usado aqui garante que Playwright (perfil) e SQLite permaneçam entre deploys.
@@ -58,6 +60,14 @@ Se o log mostrar `WORKER TIMEOUT` em `/consulta`, o Gunicorn matou o worker ante
 * usar `gunicorn main:app --bind 0.0.0.0:$PORT --timeout 180`;
 * redeployar o serviço com esse Start Command;
 * considerar reduzir `settle_seconds` no futuro se quiser consultas mais curtas.
+
+## Cron externo
+
+O endpoint próprio para agendadores externos é:
+
+* `GET /cronjobs/run?token=<CRON_SECRET>`
+
+Ele responde rápido em JSON e dispara a varredura completa e as varreduras por usuário em background, evitando timeout do HTTP do cron.
 
 ## Extras
 
